@@ -1,0 +1,70 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Stateful data tier: DynamoDB tables for players, match history, and
+  leaderboards. Retain policies protect player data across stack deletes.
+
+Parameters:
+  EnvName:
+    Type: String
+    Description: Environment name (dev, staging, prod).
+
+Resources:
+  PlayersTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub 'racer-${EnvName}-players'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: playerId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: playerId
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  MatchHistoryTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub 'racer-${EnvName}-match-history'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: playerId
+          AttributeType: S
+        - AttributeName: finishedAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: playerId
+          KeyType: HASH
+        - AttributeName: finishedAt
+          KeyType: RANGE
+
+  LeaderboardsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub 'racer-${EnvName}-leaderboards'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: trackId
+          AttributeType: S
+        - AttributeName: bestLapMs
+          AttributeType: N
+      KeySchema:
+        - AttributeName: trackId
+          KeyType: HASH
+        - AttributeName: bestLapMs
+          KeyType: RANGE
+
+Outputs:
+  PlayersTableName:
+    Value: !Ref PlayersTable
+  MatchHistoryTableName:
+    Value: !Ref MatchHistoryTable
+  LeaderboardsTableName:
+    Value: !Ref LeaderboardsTable

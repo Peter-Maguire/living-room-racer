@@ -1,0 +1,34 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Observability tier: CloudWatch log group and a dashboard placeholder for
+  fleet + API metrics. Alarms are added as the system matures.
+
+Parameters:
+  EnvName:
+    Type: String
+
+Resources:
+  ServerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/racer/${EnvName}/game-server'
+      RetentionInDays: 14
+
+  Dashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub 'racer-${EnvName}'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "text",
+              "x": 0, "y": 0, "width": 24, "height": 2,
+              "properties": { "markdown": "# Living-Room Racer - ${EnvName}\nFleet, matchmaking, and API metrics." }
+            }
+          ]
+        }
+
+Outputs:
+  ServerLogGroupName:
+    Value: !Ref ServerLogGroup

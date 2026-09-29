@@ -1,0 +1,44 @@
+/**
+ * Shared tuning constants used by BOTH the client (prediction) and the server
+ * (authoritative sim). These MUST be identical on both sides or prediction and
+ * reconciliation will diverge. Treat this file as part of the netcode contract.
+ */
+
+/** Authoritative simulation tick rate (Hz). Start at 30; consider 60 later. */
+export const SIM_TICK_RATE = 30;
+/** Fixed physics timestep in seconds, derived from the tick rate. */
+export const FIXED_DT = 1 / SIM_TICK_RATE;
+
+/** Rate at which the server broadcasts state snapshots to clients (Hz). */
+export const SNAPSHOT_RATE = 20;
+
+/** Rate at which clients sample and send input to the server (Hz). */
+export const INPUT_SEND_RATE = 30;
+
+/** How far in the past (ms) remote cars are rendered, for interpolation. */
+export const INTERPOLATION_DELAY_MS = 100;
+
+/** Max players per race. */
+export const MAX_PLAYERS = 8;
+
+/** Number of laps in a standard race. */
+export const RACE_LAPS = 3;
+
+// --- Off-track / recovery tuning ------------------------------------------
+
+/** Ticks a car must be off the drivable surface before recovery triggers. */
+export const OFF_TRACK_TICKS_BEFORE_RECOVERY = 15;
+/** World Y height below which a car counts as fallen off the table. */
+export const FALL_Y_THRESHOLD = -2;
+/** Seconds the car is frozen/lifted before being re-dropped on the track. */
+export const RECOVERY_LIFT_SECONDS = 1.2;
+/** Seconds of control lockout + invulnerability after being re-dropped. */
+export const RECOVERY_LOCKOUT_SECONDS = 0.75;
+
+// --- Car handling (arcade feel) -------------------------------------------
+
+export const CAR_MAX_SPEED = 18; // m/s
+export const CAR_ACCEL = 24; // m/s^2
+export const CAR_BRAKE = 30; // m/s^2
+export const CAR_STEER_RATE = 2.8; // rad/s at low speed
+export const CAR_DRIFT_GRIP = 0.6; // lateral grip while drifting (0..1)

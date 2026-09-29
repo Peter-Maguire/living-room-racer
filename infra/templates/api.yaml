@@ -1,0 +1,95 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  HTTP API tier (SAM): API Gateway + Lambda for auth, matchmaking ticket
+  creation, profiles, and leaderboards. Code is packaged from packages/api by
+  `sam build` / `aws cloudformation package`.
+
+Parameters:
+  EnvName:
+    Type: String
+  UserPoolId:
+    Type: String
+  PlayersTableName:
+    Type: String
+  LeaderboardsTableName:
+    Type: String
+  MatchmakingConfigName:
+    Type: String
+    Description: FlexMatch matchmaking configuration name.
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Timeout: 10
+    MemorySize: 256
+    Environment:
+      Variables:
+        ENV_NAME: !Ref EnvName
+        PLAYERS_TABLE: !Ref PlayersTableName
+        LEADERBOARDS_TABLE: !Ref LeaderboardsTableName
+        MATCHMAKING_CONFIG: !Ref MatchmakingConfigName
+
+Resources:
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref EnvName
+      CorsConfiguration:
+        AllowOrigins:
+          - '*'
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - authorization
+          - content-type
+
+  # Placeholder handler path; real handlers land in packages/api (P4).
+  MatchmakingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: dist/matchmaking.handler
+      CodeUri: ../../packages/api
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - gamelift:StartMatchmaking
+                - gamelift:StopMatchmaking
+                - gamelift:DescribeMatchmaking
+              Resource: '*'
+      Events:
+        StartMatchmaking:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: POST
+            Path: /matchmaking/start
+        MatchmakingStatus:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /matchmaking/status
+
+  ProfileFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: dist/profile.handler
+      CodeUri: ../../packages/api
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PlayersTableName
+      Events:
+        GetProfile:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /profile
+
+Outputs:
+  ApiUrl:
+    Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/${EnvName}'

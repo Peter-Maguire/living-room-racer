@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+packages/client/.env
+packages/server/.env
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+
+# Infra artifacts
+infra/**/root.packaged.yaml
+infra/**/*.packaged.yaml
+.aws-sam/
+
+# Assets build cache
+packages/client/public/assets/*.draco

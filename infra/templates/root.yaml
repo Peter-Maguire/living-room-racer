@@ -1,0 +1,93 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Root stack for Living-Room Racer. Nests the tier stacks and wires cross-stack
+  values via nested-stack outputs. `aws cloudformation package` uploads the
+  nested templates (and SAM Lambda code) and rewrites the local paths below to
+  S3 URLs, producing root.packaged.yaml which is what actually gets deployed.
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: dev
+  GameLiftBuildId:
+    Type: String
+    Description: GameLift build id from `aws gamelift upload-build`.
+
+Resources:
+  DataStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./data.yaml
+      Parameters:
+        EnvName: !Ref EnvName
+
+  IdentityStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./identity.yaml
+      Parameters:
+        EnvName: !Ref EnvName
+
+  GameLiftStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./gamelift.yaml
+      Parameters:
+        EnvName: !Ref EnvName
+        BuildId: !Ref GameLiftBuildId
+
+  MatchmakingStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: GameLiftStack
+    Properties:
+      TemplateURL: ./matchmaking.yaml
+      Parameters:
+        EnvName: !Ref EnvName
+        GameSessionQueueArn: !GetAtt GameLiftStack.Outputs.QueueArn
+
+  ApiStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - DataStack
+      - IdentityStack
+      - MatchmakingStack
+    Properties:
+      TemplateURL: ./api.yaml
+      Parameters:
+        EnvName: !Ref EnvName
+        UserPoolId: !GetAtt IdentityStack.Outputs.UserPoolId
+        PlayersTableName: !GetAtt DataStack.Outputs.PlayersTableName
+        LeaderboardsTableName: !GetAtt DataStack.Outputs.LeaderboardsTableName
+        MatchmakingConfigName: !GetAtt MatchmakingStack.Outputs.MatchmakingConfigName
+
+  WebStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./web.yaml
+      Parameters:
+        EnvName: !Ref EnvName
+
+  ObservabilityStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./observability.yaml
+      Parameters:
+        EnvName: !Ref EnvName
+
+Outputs:
+  ApiUrl:
+    Value: !GetAtt ApiStack.Outputs.ApiUrl
+  UserPoolId:
+    Value: !GetAtt IdentityStack.Outputs.UserPoolId
+  UserPoolClientId:
+    Value: !GetAtt IdentityStack.Outputs.UserPoolClientId
+  IdentityPoolId:
+    Value: !GetAtt IdentityStack.Outputs.IdentityPoolId
+  MatchmakingConfigName:
+    Value: !GetAtt MatchmakingStack.Outputs.MatchmakingConfigName
+  WebDistributionDomain:
+    Value: !GetAtt WebStack.Outputs.DistributionDomain
+  WebBucketName:
+    Value: !GetAtt WebStack.Outputs.SiteBucketName
+  WebDistributionId:
+    Value: !GetAtt WebStack.Outputs.DistributionId

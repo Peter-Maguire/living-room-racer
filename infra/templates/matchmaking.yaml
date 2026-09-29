@@ -1,0 +1,64 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  GameLift FlexMatch: matchmaking rule set and configuration. Places 2-8 players
+  into a single "racers" team using latency rules, then routes accepted matches
+  to the GameLift queue.
+
+Parameters:
+  EnvName:
+    Type: String
+  GameSessionQueueArn:
+    Type: String
+    Description: ARN of the GameLift queue that hosts matched sessions.
+  AcceptanceRequired:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'false'
+
+Resources:
+  RuleSet:
+    Type: AWS::GameLift::MatchmakingRuleSet
+    Properties:
+      Name: !Sub 'racer-${EnvName}-ruleset'
+      RuleSetBody: |
+        {
+          "name": "racer_ruleset",
+          "ruleLanguageVersion": "1.0",
+          "teams": [
+            { "name": "racers", "minPlayers": 2, "maxPlayers": 8 }
+          ],
+          "rules": [
+            {
+              "name": "latency",
+              "type": "latency",
+              "maxLatency": 180
+            }
+          ],
+          "expansions": [
+            {
+              "target": "rules[latency].maxLatency",
+              "steps": [
+                { "waitTimeSeconds": 10, "value": 220 },
+                { "waitTimeSeconds": 20, "value": 300 }
+              ]
+            }
+          ]
+        }
+
+  MatchmakingConfig:
+    Type: AWS::GameLift::MatchmakingConfiguration
+    Properties:
+      Name: !Sub 'racer-${EnvName}-matchmaking'
+      RuleSetName: !Ref RuleSet
+      RequestTimeoutSeconds: 60
+      AcceptanceRequired: !Ref AcceptanceRequired
+      GameSessionQueueArns:
+        - !Ref GameSessionQueueArn
+      BackfillMode: MANUAL
+      FlexMatchMode: WITH_QUEUE
+
+Outputs:
+  MatchmakingConfigName:
+    Value: !Ref MatchmakingConfig
+  RuleSetName:
+    Value: !Ref RuleSet
