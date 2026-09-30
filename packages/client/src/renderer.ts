@@ -35,6 +35,11 @@ const CAMERA_TILT_DEG = 21;
 
 /** Extra room around the track extents so cars near the edge aren't clipped. */
 const CAMERA_MARGIN = 1.18;
+/** Resting vertical FOV; speed/boost widen it temporarily for a sense of speed. */
+const BASE_FOV = 50;
+const MAX_SPEED_FOV_KICK = 4;
+const BOOST_FOV_KICK = 3;
+const BOOST_SHAKE = 0.18;
 
 /**
  * three.js rendering layer. Top-down camera looking at the track. It draws a
@@ -61,6 +66,11 @@ export class Renderer {
   private localRing: THREE.Mesh;
   /** Extents of the currently loaded track, for camera + shadow fitting. */
   private trackBounds: TrackBounds | null = null;
+  /** Camera rest position (shake is applied around it). */
+  private camBase = new THREE.Vector3();
+  private fxSpeed = 0;
+  private fxBoosting = false;
+  private fovKick = 0;
 
   constructor(container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -277,8 +287,10 @@ export class Renderer {
    * than a little extra padding.
    */
   private frameCamera(b: TrackBounds): void {
-    const vFov = (this.camera.fov * Math.PI) / 180;
-    const hFov = 2 * Math.atan(Math.tan(vFov / 2) * this.camera.aspect);
+    const vFov = (BASE_FOV * Math.PI) / 180;
+    // Fit against the resting FOV so the speed kick can't feed back into framing.
+    const aspect = this.camera.aspect;
+    const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
     const distForWidth = (b.halfX * CAMERA_MARGIN) / Math.tan(hFov / 2);
     const distForDepth = (b.halfZ * CAMERA_MARGIN) / Math.tan(vFov / 2);
     const dist = Math.max(distForWidth, distForDepth);
@@ -289,8 +301,15 @@ export class Renderer {
       Math.cos(tilt) * dist,
       b.centerZ + Math.sin(tilt) * dist,
     );
+    this.camBase.copy(this.camera.position);
     this.camera.lookAt(b.centerX, 0, b.centerZ);
     this.camera.updateProjectionMatrix();
+  }
+
+  /** Local car's normalised speed (0..1) and boost state, driving camera FX. */
+  setSpeedFx(speedNorm: number, boosting: boolean): void {
+    this.fxSpeed = Math.max(0, Math.min(1, speedNorm));
+    this.fxBoosting = boosting;
   }
 
   /** Dispose all geometries/materials under a group before removing it. */
@@ -383,6 +402,25 @@ export class Renderer {
   }
 
   render(): void {
+    // Ease the FOV toward its target so the kick swells rather than snaps.
+    const target =
+      this.fxSpeed * MAX_SPEED_FOV_KICK + (this.fxBoosting ? BOOST_FOV_KICK : 0);
+    this.fovKick += (target - this.fovKick) * 0.08;
+    const fov = BASE_FOV + this.fovKick;
+    if (Math.abs(fov - this.camera.fov) > 0.005) {
+      this.camera.fov = fov;
+      this.camera.updateProjectionMatrix();
+    }
+    // Shake only while boosting; otherwise rest exactly on the framed position.
+    if (this.fxBoosting && this.trackBounds) {
+      this.camera.position.set(
+        this.camBase.x + (Math.random() - 0.5) * BOOST_SHAKE,
+        this.camBase.y + (Math.random() - 0.5) * BOOST_SHAKE,
+        this.camBase.z + (Math.random() - 0.5) * BOOST_SHAKE,
+      );
+    } else if (this.trackBounds) {
+      this.camera.position.copy(this.camBase);
+    }
     this.renderer.render(this.scene, this.camera);
   }
 

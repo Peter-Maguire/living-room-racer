@@ -1,5 +1,9 @@
-import { carColor, type LobbyState, type RaceFinished } from '@racer/shared';
+import { carColor, getTrack, type LobbyState, type RaceFinished } from '@racer/shared';
 import { ordinal } from './hud.js';
+import { trackPreviewSvg } from './minimap.js';
+
+/** Seconds the results screen waits before sending everyone back to the lobby. */
+const REMATCH_SECONDS = 20;
 
 /** Identity bits needed to render a player on the results screen. */
 export interface PlayerMeta {
@@ -26,6 +30,10 @@ export class Overlay {
   private mmRetryBtn: HTMLButtonElement;
   private mmSpinnerEl: HTMLDivElement;
   private ready = false;
+  private rematchBtn: HTMLButtonElement;
+  private previewEl: HTMLDivElement;
+  private lastPreviewId: string | null = null;
+  private rematchTimer: number | null = null;
   /** Last whole second shown, so the countdown animation retriggers once each. */
   private lastCountdownSec: number | null = null;
 
@@ -43,11 +51,13 @@ export class Overlay {
       <h2>Lobby</h2>
       <div class="player-list"></div>
       <label class="track-pick">Track: <select class="track-select"></select></label>
+      <div class="track-preview"></div>
       <div class="countdown"></div>
       <button class="ready-btn">Ready up</button>
     `;
     this.playerListEl = this.lobbyEl.querySelector('.player-list')!;
     this.countdownEl = this.lobbyEl.querySelector('.countdown')!;
+    this.previewEl = this.lobbyEl.querySelector('.track-preview')!;
     this.readyBtn = this.lobbyEl.querySelector('.ready-btn')!;
     this.trackSelectEl = this.lobbyEl.querySelector('.track-select')!;
     this.trackSelectEl.addEventListener('change', () => {
@@ -69,9 +79,9 @@ export class Overlay {
       <button class="rematch-btn">Back to lobby</button>
     `;
     this.resultsBodyEl = this.resultsEl.querySelector('.results-body')!;
-    this.resultsEl
-      .querySelector('.rematch-btn')!
-      .addEventListener('click', () => {
+    this.rematchBtn = this.resultsEl.querySelector('.rematch-btn')!;
+    this.rematchBtn.addEventListener('click', () => {
+        this.stopRematchTimer();
         this.ready = false;
         this.readyBtn.textContent = 'Ready up';
         this.readyBtn.classList.remove('is-ready');
@@ -111,6 +121,7 @@ export class Overlay {
     elapsedSeconds?: number,
     canRetry = false,
   ): void {
+    this.stopRematchTimer();
     this.matchmakingEl.style.display = 'flex';
     this.lobbyEl.style.display = 'none';
     this.resultsEl.style.display = 'none';
@@ -123,12 +134,14 @@ export class Overlay {
   }
 
   showLobby(): void {
+    this.stopRematchTimer();
     this.matchmakingEl.style.display = 'none';
     this.lobbyEl.style.display = 'flex';
     this.resultsEl.style.display = 'none';
   }
 
   showRace(): void {
+    this.stopRematchTimer();
     this.matchmakingEl.style.display = 'none';
     this.lobbyEl.style.display = 'none';
     this.resultsEl.style.display = 'none';
@@ -138,16 +151,25 @@ export class Overlay {
     result: RaceFinished,
     localId: string | undefined,
     meta: Map<string, PlayerMeta>,
+    trackId = '',
   ): void {
     this.matchmakingEl.style.display = 'none';
     this.lobbyEl.style.display = 'none';
     this.resultsEl.style.display = 'flex';
+    const fastest = Math.min(
+      ...result.results.map((r) => (r.bestLapMs > 0 ? r.bestLapMs : Infinity)),
+    );
+    const localBest = result.results.find((r) => r.playerId === localId)?.bestLapMs ?? 0;
+    const isPb = localBest > 0 && recordPersonalBest(trackId, localBest);
     this.resultsBodyEl.innerHTML = result.results
       .map((r, i) => {
         const m = meta.get(r.playerId);
         const color = carColor(m?.colorIndex ?? 0).css;
         const name = m?.displayName ?? 'Racer';
         const you = r.playerId === localId ? ' (you)' : '';
+        const tags =
+          (r.bestLapMs > 0 && r.bestLapMs === fastest ? '<span class="tag tag-fast">FASTEST LAP</span>' : '') +
+          (r.playerId === localId && isPb ? '<span class="tag tag-pb">NEW PB</span>' : '');
         const best = r.bestLapMs > 0 ? `${(r.bestLapMs / 1000).toFixed(2)}s` : '—';
         const total = r.totalMs > 0 ? `${(r.totalMs / 1000).toFixed(2)}s` : '—';
         // Staggered entrance so rows land in finishing order.
@@ -155,11 +177,36 @@ export class Overlay {
           <div class="result-row${r.playerId === localId ? ' is-you' : ''}" style="animation-delay:${i * 90}ms">
             <span class="place">${ordinal(r.place)}</span>
             <span class="swatch" style="background:${color}"></span>
-            <span class="who">${escapeHtml(name)}${you}</span>
-            <span class="times"><span class="t-best">best ${best}</span><span class="t-total">total ${total}</span></span>
+            <span class="who">${escapeHtml(name)}${you}${tags}</span>
+            <span class="times"><span class="t-best">best <b>${best}</b></span><span class="t-total">total <b>${total}</b></span></span>
           </div>`;
       })
       .join('');
+    this.startRematchTimer();
+  }
+
+  private startRematchTimer(): void {
+    this.stopRematchTimer();
+    let left = REMATCH_SECONDS;
+    const paint = () => {
+      this.rematchBtn.textContent = `Back to lobby (${left})`;
+    };
+    paint();
+    this.rematchTimer = window.setInterval(() => {
+      left -= 1;
+      if (left <= 0) {
+        this.rematchBtn.click();
+        return;
+      }
+      paint();
+    }, 1000);
+  }
+
+  private stopRematchTimer(): void {
+    if (this.rematchTimer != null) {
+      clearInterval(this.rematchTimer);
+      this.rematchTimer = null;
+    }
   }
 
   updateLobby(lobby: LobbyState, localId: string | undefined): void {
@@ -187,6 +234,11 @@ export class Overlay {
     }
     if (document.activeElement !== this.trackSelectEl) {
       this.trackSelectEl.value = lobby.activeTrackId;
+    }
+
+    if (lobby.activeTrackId !== this.lastPreviewId) {
+      this.lastPreviewId = lobby.activeTrackId;
+      this.previewEl.innerHTML = trackPreviewSvg(getTrack(lobby.activeTrackId));
     }
 
     if (lobby.countdownMs != null) {
@@ -244,7 +296,13 @@ export class Overlay {
         to { opacity: 1; transform: translateY(0); }
       }
       .result-row .place { font-weight: 700; min-width: 42px; text-align: left; }
-      .result-row .times { display: flex; flex-direction: column; font-size: 11px; opacity: 0.75; text-align: right; }
+      .result-row .times { display: flex; gap: 14px; font-size: 11px; opacity: 0.85; text-align: right; }
+      .result-row .times span { display: flex; flex-direction: column; }
+      .result-row .times b { font-size: 14px; font-variant-numeric: tabular-nums; }
+      .tag { margin-left: 8px; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 800; letter-spacing: 0.08em; }
+      .tag-fast { background: rgba(165,107,255,0.3); color: #d3b8ff; }
+      .tag-pb { background: rgba(141,245,160,0.25); color: #8df5a0; }
+      .track-preview { width: 120px; height: 120px; border-radius: 12px; background: rgba(255,255,255,0.06); }
 
       /* --- matchmaking screen --- */
       .mm-message { font-size: 18px; opacity: 0.95; max-width: 30rem; line-height: 1.45; }
@@ -295,6 +353,20 @@ export class Overlay {
       }
     `;
     document.head.appendChild(style);
+  }
+}
+
+/** Store a new per-track personal best; true if `ms` beat the previous one. */
+function recordPersonalBest(trackId: string, ms: number): boolean {
+  const key = `racer.best.${trackId}`;
+  try {
+    const prev = Number(localStorage.getItem(key));
+    if (prev > 0 && prev <= ms) return false;
+    localStorage.setItem(key, String(ms));
+    // First ever time on a track isn't a "new" PB worth celebrating.
+    return prev > 0;
+  } catch {
+    return false;
   }
 }
 

@@ -13,6 +13,7 @@ import {
 import { AudioEngine } from './audio.js';
 import { loadClientConfig } from './config.js';
 import { Hud } from './hud.js';
+import { Minimap } from './minimap.js';
 import { InputSampler } from './input.js';
 import { Interpolator } from './interpolation.js';
 import { resolveConnection } from './matchmaking.js';
@@ -57,6 +58,8 @@ function main(): void {
   );
 
   const hudPanel = hud ? new Hud(hud) : null;
+  const minimap = new Minimap(app);
+  minimap.setTrack(track);
 
   /**
    * Per-player identity from lobby state: display name + server-assigned car
@@ -120,6 +123,7 @@ function main(): void {
     if (lobby.activeTrackId !== track.id) {
       track = getTrack(lobby.activeTrackId);
       renderer.buildTrack(track);
+      minimap.setTrack(track);
       predictorId = undefined; // triggers predictor rebuild on next snapshot
     }
   });
@@ -132,11 +136,16 @@ function main(): void {
     phase = next;
     // The HUD is only meaningful while racing.
     hudPanel?.setVisible(next === 'racing');
+    minimap.setVisible(next === 'racing');
     if (next === 'racing') {
       overlay.showRace();
     } else if (next === 'finished') {
       if (lastResult) {
-        overlay.showResults(lastResult, net.getPlayerId(), playerMeta);
+        overlay.showResults(lastResult, net.getPlayerId(), playerMeta, track.id);
+      } else {
+        // Joined after the race ended, so we never got its results: the lobby
+        // (where ready-up restarts the match) is the only useful screen.
+        overlay.showLobby();
       }
     } else {
       // lobby or countdown: lobby overlay (countdown shown within it).
@@ -184,7 +193,6 @@ function main(): void {
   }
 
   void beginMatchmaking();
-
   // Input tick: only while racing. Sample, predict locally, and send.
   setInterval(() => {
     if (phase !== 'racing') return;
@@ -233,6 +241,10 @@ function main(): void {
     renderer.render();
 
     // Audio: engine tone from local speed; one-shot sfx on item transitions.
+    renderer.setSpeedFx(
+      local && phase === 'racing' ? Math.abs(local.speed) / CAR_MAX_SPEED : 0,
+      phase === 'racing' && (me?.boosting ?? false),
+    );
     if (local && phase === 'racing') {
       audio.setEngineSpeed(Math.abs(local.speed) / CAR_MAX_SPEED);
     } else {
@@ -251,6 +263,9 @@ function main(): void {
         playerId,
         carColor(playerId ? (playerMeta.get(playerId)?.colorIndex ?? 0) : 0).css,
       );
+    }
+    if (phase === 'racing' && snap) {
+      minimap.draw(snap, playerId, (id) => carColor(playerMeta.get(id)?.colorIndex ?? 0).css);
     }
     requestAnimationFrame(frame);
   }
