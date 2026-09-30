@@ -74,6 +74,12 @@ function main(): void {
   // Track item/boost state to fire one-shot sfx on transitions.
   let prevBoosting = false;
   let prevHeldItem: string | null = null;
+  let prevMePhase: string | null = null;
+  let prevLocalSpeed = 0;
+  let lastImpactAt = 0;
+  let lastThrottle = 0;
+  let lastCountdownSec: number | null = null;
+  createAudioControls(app, audio);
 
   // The predictor needs our playerId (socket id), known only after connect.
   let predictor: Predictor | null = null;
@@ -108,6 +114,14 @@ function main(): void {
   });
 
   net.onLobby((lobby) => {
+    // Countdown beeps, synced to the server's clock: one per whole second.
+    if (lobby.countdownMs != null) {
+      const secs = Math.ceil(lobby.countdownMs / 1000);
+      if (secs !== lastCountdownSec && secs > 0) audio.tick();
+      lastCountdownSec = secs;
+    } else {
+      lastCountdownSec = null;
+    }
     // Refresh the colour/name map before anything renders from it. Rebuilt
     // wholesale so a player who left stops occupying their old colour locally.
     playerMeta.clear();
@@ -133,6 +147,7 @@ function main(): void {
   });
 
   function setPhase(next: RacePhase): void {
+    if (next === 'racing' && phase === 'countdown') audio.go();
     phase = next;
     // The HUD is only meaningful while racing.
     hudPanel?.setVisible(next === 'racing');
@@ -197,6 +212,7 @@ function main(): void {
   setInterval(() => {
     if (phase !== 'racing') return;
     const sample = input.sample();
+    lastThrottle = sample.throttle;
     predictor?.predict(sample);
     net.sendInput(sample);
   }, 1000 / INPUT_SEND_RATE);
@@ -245,12 +261,48 @@ function main(): void {
       local && phase === 'racing' ? Math.abs(local.speed) / CAR_MAX_SPEED : 0,
       phase === 'racing' && (me?.boosting ?? false),
     );
-    if (local && phase === 'racing') {
-      audio.setEngineSpeed(Math.abs(local.speed) / CAR_MAX_SPEED);
+    const racing = phase === 'racing';
+    audio.setLocalEngine(
+      local && racing ? Math.abs(local.speed) / CAR_MAX_SPEED : 0,
+      lastThrottle,
+      racing && me?.phase === 'racing',
+    );
+    audio.setRemoteCars(
+      cars.filter((c) => !c.isLocal).map((c) => ({
+        playerId: c.playerId,
+        x: c.position.x,
+        z: c.position.z,
+      })),
+      local ? { x: local.position.x, z: local.position.z } : null,
+      racing,
+      CAR_MAX_SPEED,
+    );
+    if (local && racing) {
+      // Tyre noise tracks sideways slip: velocity component across the heading.
+      const lateral =
+        local.velocity.x * Math.cos(local.heading) - local.velocity.z * Math.sin(local.heading);
+      audio.setTyre(Math.min(1, (Math.abs(lateral) / CAR_MAX_SPEED) * 3), 'floor');
+      // Collision: a sudden loss of speed in one frame. Car-vs-car if a rival is
+      // close, otherwise scenery (walls, props).
+      const drop = prevLocalSpeed - Math.abs(local.speed);
+      if (drop > CAR_MAX_SPEED * 0.12 && now - lastImpactAt > 250) {
+        lastImpactAt = now;
+        const nearRival = cars.some(
+          (c) =>
+            !c.isLocal &&
+            Math.hypot(c.position.x - local.position.x, c.position.z - local.position.z) < 3,
+        );
+        audio.impact(drop / (CAR_MAX_SPEED * 0.5), nearRival ? 'car' : 'scenery');
+      }
+      prevLocalSpeed = Math.abs(local.speed);
     } else {
-      audio.setEngineSpeed(0);
+      audio.setTyre(0, 'floor');
+      prevLocalSpeed = 0;
     }
     if (me) {
+      if (me.phase === 'recovering' && prevMePhase !== 'recovering') audio.recoveryStart();
+      if (prevMePhase === 'recovering' && me.phase !== 'recovering') audio.recoveryEnd();
+      prevMePhase = me.phase;
       if (me.boosting && !prevBoosting) audio.boost();
       if (me.heldItem && me.heldItem !== prevHeldItem) audio.pickup();
       prevBoosting = me.boosting;
@@ -270,6 +322,48 @@ function main(): void {
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
+}
+
+/** Small mute button + volume slider, top right. Both persist via AudioEngine. */
+function createAudioControls(container: HTMLElement, audio: AudioEngine): void {
+  const wrap = document.createElement('div');
+  wrap.style.cssText =
+    'position:absolute;top:12px;right:12px;z-index:20;display:flex;gap:8px;align-items:center;' +
+    'background:rgba(10,12,18,0.55);border-radius:10px;padding:6px 10px;color:#fff;font-size:16px;';
+  const btn = document.createElement('button');
+  btn.style.cssText = 'background:none;border:0;color:inherit;cursor:pointer;font-size:16px;padding:0;';
+  btn.setAttribute('aria-label', 'Toggle sound (M)');
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.min = '0';
+  slider.max = '1';
+  slider.step = '0.05';
+  slider.value = String(audio.getVolume());
+  slider.style.width = '70px';
+  slider.setAttribute('aria-label', 'Volume');
+  const paint = () => {
+    btn.textContent = audio.isMuted() ? '🔇' : '🔊';
+  };
+  const toggle = () => {
+    audio.resume();
+    audio.toggleMute();
+    paint();
+  };
+  btn.addEventListener('click', toggle);
+  slider.addEventListener('input', () => {
+    audio.resume();
+    audio.setVolume(Number(slider.value));
+    if (audio.isMuted()) {
+      audio.setMuted(false);
+      paint();
+    }
+  });
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'KeyM' && !e.repeat) toggle();
+  });
+  paint();
+  wrap.append(btn, slider);
+  container.appendChild(wrap);
 }
 
 /**
