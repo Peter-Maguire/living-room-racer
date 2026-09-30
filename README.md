@@ -35,6 +35,20 @@ Local development connects the client directly to `http://localhost:3001`; it do
 
 `infra/scripts/outputs.ps1` and `outputs.sh` generate `packages/client/.env.production` for deployment builds. Do not run the GameLift wrapper or its Docker image for ordinary local play: those are for the managed GameLift container fleet. GameLift Anywhere requires a separate Anywhere-specific wrapper configuration.
 
+## Graphics and dev options
+
+The client is art-free by default: textures, toy cars and the living-room props are generated in code (`packages/client/src/gfx/`). Optional URL parameters:
+
+| Parameter | Effect |
+|-----------|--------|
+| `?debug` | Frame time, draw calls, triangles and texture counts in the corner. |
+| `?gfx=low` | No shadows, scenery, particles or skid marks; pixel ratio 1. For low-end machines. |
+| `?cam=follow` | Close camera on your car (handy for inspecting models and effects). |
+
+To use real art, drop a `car.glb` into `packages/client/public/assets/` — see the contract in that folder's README. A missing or broken file falls back to the built-in car.
+
+Testing helpers: `pnpm --filter @racer/shared validate` (track, physics and item rules), `pnpm --filter @racer/client e2e:items` (every item end to end over real sockets), `node packages/client/scripts/run-bots.mjs --port 3001` (scripted opponents), and `FORCE_ITEM=oil` on the server (every pad gives that item).
+
 ## Infrastructure
 
 All AWS resources are defined in CloudFormation under `infra/`. See [`infra/README.md`](./infra/README.md) for the from-scratch bootstrap and the local iteration loop.

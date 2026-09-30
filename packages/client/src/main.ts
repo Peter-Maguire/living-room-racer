@@ -15,6 +15,7 @@ import {
   type Snapshot,
 } from '@racer/shared';
 import { AudioEngine } from './audio.js';
+import { loadAssets } from './gfx/assets.js';
 import { Music } from './music.js';
 import { loadClientConfig } from './config.js';
 import { Hud, positionOf } from './hud.js';
@@ -25,7 +26,7 @@ import { resolveConnection } from './matchmaking.js';
 import { NetworkClient } from './network.js';
 import { Overlay, type PlayerMeta } from './overlay.js';
 import { Predictor } from './prediction.js';
-import { Renderer, type RenderCar } from './renderer.js';
+import { Renderer, type RenderCar, type RenderStats } from './renderer.js';
 
 /**
  * Client entry point. Wires renderer, network, input, prediction,
@@ -36,7 +37,44 @@ import { Renderer, type RenderCar } from './renderer.js';
  *  - Racing: overlay hidden, input predicted + sent, HUD shown.
  *  - Finished: results overlay shown; "back to lobby" clears ready + rematches.
  */
-function main(): void {
+/** Full-screen "Loading..." shown while assets load, so the first frame is never a blank canvas. */
+function showLoading(): { set(message: string): void; done(): void } {
+  const el = document.createElement('div');
+  el.style.cssText =
+    'position:fixed;inset:0;z-index:50;display:flex;flex-direction:column;align-items:center;justify-content:center;' +
+    'gap:14px;background:#14110f;color:#fff;font-family:system-ui,sans-serif;';
+  el.innerHTML = '<div style="font-size:28px;font-weight:700">Living-Room Racer</div><div class="msg" style="opacity:.7">Loading…</div>';
+  document.body.appendChild(el);
+  const msg = el.querySelector('.msg')!;
+  return { set: (m) => void (msg.textContent = m), done: () => el.remove() };
+}
+
+/** Sideways slip 0..1: how far the velocity points across the heading. */
+function lateralSlip(vx: number, vz: number, heading: number): number {
+  const lateral = vx * Math.cos(heading) - vz * Math.sin(heading);
+  return Math.min(1, (Math.abs(lateral) / CAR_MAX_SPEED) * 3);
+}
+
+/** ?debug: a small frame-time and render-cost readout in the corner. */
+function createDebugOverlay(): ((frameMs: number, stats: RenderStats) => void) | null {
+  if (!new URLSearchParams(location.search).has('debug')) return null;
+  const el = document.createElement('pre');
+  el.style.cssText =
+    'position:fixed;left:8px;bottom:8px;z-index:60;margin:0;padding:6px 8px;border-radius:6px;' +
+    'background:rgba(0,0,0,.65);color:#9fe8a0;font:11px/1.35 ui-monospace,monospace;pointer-events:none;';
+  document.body.appendChild(el);
+  let acc = 0, n = 0, lastShown = performance.now();
+  return (frameMs, s) => {
+    acc += frameMs; n++;
+    const now = performance.now();
+    if (now - lastShown < 500) return;
+    const avg = acc / n;
+    el.textContent = `${(1000 / avg).toFixed(0)} fps  ${avg.toFixed(1)} ms\ncalls ${s.drawCalls}  tris ${(s.triangles / 1000).toFixed(1)}k\ngeoms ${s.geometries}  tex ${s.textures}`;
+    acc = 0; n = 0; lastShown = now;
+  };
+}
+
+async function main(): Promise<void> {
   const config = loadClientConfig();
   const app = document.getElementById('app');
   const hud = document.getElementById('hud');
@@ -45,7 +83,14 @@ function main(): void {
   // The active track can change in the lobby; it starts as the oval and is
   // reconciled to whatever the server reports via lobby state.
   let track = OVAL_TRACK;
-  const renderer = new Renderer(app);
+  // Assets load behind a loading screen. Missing files fall back to built-in art,
+  // so this never fails; ?gfx=low turns off shadows, scenery and particles.
+  const loading = showLoading();
+  const assets = await loadAssets((m) => loading.set(m));
+  const quality = new URLSearchParams(location.search).get('gfx') === 'low' ? 'low' : 'high';
+  loading.set('Building the room…');
+  const renderer = new Renderer(app, assets, quality);
+  renderer.setFollowCamera(new URLSearchParams(location.search).get('cam') === 'follow');
   renderer.buildTrack(track);
   const net = new NetworkClient();
   const input = new InputSampler();
@@ -245,6 +290,9 @@ function main(): void {
     net.sendInput(sample);
   }, 1000 / INPUT_SEND_RATE);
 
+  const debug = createDebugOverlay();
+  let lastFrameAt = performance.now();
+
   function frame(): void {
     const now = performance.now();
     const playerId = net.getPlayerId();
@@ -264,6 +312,8 @@ function main(): void {
         isLocal: true,
         boosting: me?.boosting ?? false,
         effects: me?.effects?.map((e) => e.type),
+        speed: local.speed,
+        slip: lateralSlip(local.velocity.x, local.velocity.z, local.heading),
         color: colorHexFor(local.playerId),
         ...roadTilt(track, local.position, local.heading),
       });
@@ -279,6 +329,8 @@ function main(): void {
         isLocal: false,
         boosting: c.boosting,
         effects: c.effects?.map((e) => e.type),
+        speed: c.speed ?? Math.hypot(c.linearVelocity.x, c.linearVelocity.z),
+        slip: lateralSlip(c.linearVelocity.x, c.linearVelocity.z, 2 * Math.atan2(c.rotation.y, c.rotation.w)),
         color: colorHexFor(c.playerId),
         ...roadTilt(track, c.position, 2 * Math.atan2(c.rotation.y, c.rotation.w)),
       });
@@ -290,6 +342,8 @@ function main(): void {
       renderer.setHazards(snap.hazards ?? [], lastSnapAt, now);
     }
     renderer.render();
+    debug?.(now - lastFrameAt, renderer.getStats());
+    lastFrameAt = now;
 
     // Audio: engine tone from local speed; one-shot sfx on item transitions.
     renderer.setSpeedFx(
@@ -331,6 +385,7 @@ function main(): void {
             Math.hypot(c.position.x - local.position.x, c.position.z - local.position.z) < 3,
         );
         audio.impact(drop / (CAR_MAX_SPEED * 0.5), nearRival ? 'car' : 'scenery');
+        renderer.burst(local.position.x, local.position.y, local.position.z, Math.min(1, drop / (CAR_MAX_SPEED * 0.5)));
       }
       prevLocalSpeed = Math.abs(local.speed);
     } else {
@@ -371,6 +426,7 @@ function main(): void {
     }
     requestAnimationFrame(frame);
   }
+  loading.done();
   requestAnimationFrame(frame);
 }
 
@@ -464,4 +520,7 @@ function getOrCreateLocalPlayerId(): string {
   return id;
 }
 
-main();
+void main().catch((err) => {
+  console.error('[client] failed to start:', err);
+  document.body.innerHTML = '<pre style="color:#fff;padding:24px">Failed to start: ' + String(err instanceof Error ? err.message : err) + '</pre>';
+});

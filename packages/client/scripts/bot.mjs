@@ -53,7 +53,7 @@ export function startBot(name, cruise, url) {
         return { dist: Math.hypot(dx, dz), ahead };
       };
       switch (me.heldItem) {
-        case 'oil': case 'tape': useItem = true; break;
+        case 'oil': case 'tape': case 'boost': useItem = true; break;
         // Dust only hits cars behind you, so wait until someone is.
         case 'dust': useItem = others.some((c) => rel(c).ahead < -2); break;
         case 'shock': useItem = others.some((c) => rel(c).dist < 8); break;
