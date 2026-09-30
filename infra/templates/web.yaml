@@ -29,6 +29,49 @@ Resources:
         SigningBehavior: always
         SigningProtocol: sigv4
 
+  # Routes /g/<ec2-dns>/<port>/<rest> to that game server over plain HTTP,
+  # rewriting the URI to /<rest>. Only GameLift-style EC2 hostnames and the
+  # container connection port range are accepted, so this can't be used as a
+  # general-purpose proxy (it can still reach any EC2 host in us-east-1 on those
+  # ports, which is acceptable for dev/demo but not production).
+  GameRouteFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub 'racer-${EnvName}-game-route'
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Route /g/<ec2-dns>/<port>/* to the matching game server
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        import cf from 'cloudfront';
+
+        const HOST = /^ec2-\d{1,3}-\d{1,3}-\d{1,3}-\d{1,3}\.compute-1\.amazonaws\.com$/;
+
+        function notFound() {
+          return { statusCode: 404, statusDescription: 'Not Found' };
+        }
+
+        function handler(event) {
+          const request = event.request;
+          const m = request.uri.match(/^\/g\/([^\/]+)\/(\d+)(\/.*)?$/);
+          if (!m || !HOST.test(m[1])) return notFound();
+          const port = parseInt(m[2], 10);
+          if (port < 32768 || port > 60000) return notFound();
+
+          request.uri = m[3] || '/';
+          cf.updateRequestOrigin({
+            domainName: m[1],
+            customOriginConfig: {
+              port: port,
+              protocol: 'http',
+              sslProtocols: ['TLSv1.2'],
+            },
+            readTimeout: 60,
+            keepaliveTimeout: 60,
+          });
+          return request;
+        }
+
   Distribution:
     Type: AWS::CloudFront::Distribution
     Properties:
@@ -41,10 +84,30 @@ Resources:
             OriginAccessControlId: !Ref OriginAccessControl
             S3OriginConfig:
               OriginAccessIdentity: ''
+          # Placeholder only. GameRouteFunction rewrites the origin per request
+          # to the matched game server; this host is never actually contacted.
+          - Id: game-origin
+            DomainName: game-origin.example.com
+            CustomOriginConfig:
+              HTTPPort: 80
+              OriginProtocolPolicy: http-only
         DefaultCacheBehavior:
           TargetOriginId: s3-origin
           ViewerProtocolPolicy: redirect-to-https
           CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # Managed-CachingOptimized
+        CacheBehaviors:
+          # TLS front for game servers (plain-HTTP EC2 containers on dynamic
+          # ports). The client connects to https://<cloudfront>/g/<dns>/<port>/...
+          # (socket.io `path`), so the browser never sees mixed content.
+          - PathPattern: /g/*
+            TargetOriginId: game-origin
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad # Managed-CachingDisabled
+            OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3 # Managed-AllViewer
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt GameRouteFunction.FunctionARN
         CustomErrorResponses:
           - ErrorCode: 403
             ResponseCode: 200

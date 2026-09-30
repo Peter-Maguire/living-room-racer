@@ -4,6 +4,11 @@ import type { ClientConfig } from './config.js';
 export interface GameConnection {
   /** socket.io URL, e.g. http://1.2.3.4:3001 */
   url: string;
+  /**
+   * socket.io `path` override. Set when tunnelling through CloudFront (see
+   * WebStack's /g/* behavior); omitted for direct connections.
+   */
+  path?: string;
   /** GameLift player session id the server validates, or a local placeholder. */
   playerSessionId: string;
 }
@@ -122,6 +127,16 @@ async function startMatchmaking(
       const host = dnsName ?? ipAddress;
       if (host && port && playerSessionId) {
         onStatus({ phase: 'connecting', message: 'Match found — connecting…' });
+        // An https page can't open http:// or ws:// connections (mixed content),
+        // and game servers have no TLS. CloudFront's /g/<dns>/<port>/ route
+        // terminates TLS and forwards to the server. It needs a DNS name, not an IP.
+        if (window.location.protocol === 'https:' && dnsName) {
+          return {
+            url: window.location.origin,
+            path: `/g/${dnsName}/${port}/socket.io/`,
+            playerSessionId,
+          };
+        }
         return { url: `http://${host}:${port}`, playerSessionId };
       }
     }

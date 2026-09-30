@@ -45,8 +45,10 @@ $prevEap = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 try {
     Write-Host '==> Logging docker in to ECR'
-    $pw = (aws ecr get-login-password --region $region) 2>&1
-    $pw | docker login --username AWS --password-stdin $registry 2>&1 | Out-Null
+    # Pipe through cmd.exe: PowerShell 5.1 re-encodes/wraps piped native output
+    # (stderr ErrorRecords, CRLF, BOM), which corrupts the token and makes ECR
+    # answer "400 Bad Request". cmd passes the raw bytes through.
+    cmd /c "aws ecr get-login-password --region $region | docker login --username AWS --password-stdin $registry" 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'docker login to ECR failed' }
 
     Write-Host "==> Building image $imageUri"

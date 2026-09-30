@@ -37,8 +37,8 @@ export class NetworkClient {
   }
 
   /** Connect to the resolved game-server URL and join with the given identity. */
-  connect(url: string, join: JoinMatch): void {
-    const socket = io(url, { autoConnect: false });
+  connect(url: string, join: JoinMatch, path?: string): void {
+    const socket = io(url, { autoConnect: false, ...(path ? { path } : {}) });
     this.socket = socket;
 
     socket.on(SocketEvents.Snapshot, (snap: Snapshot) => {

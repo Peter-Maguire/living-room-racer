@@ -66,7 +66,20 @@ if (-not (Test-Path $packaged)) {
 
 # Build parameter overrides from the params file; -GameServerImageUri wins.
 $params = Get-Content $paramsFile -Raw | ConvertFrom-Json
-if ($GameServerImageUri) { $params.GameServerImageUri = $GameServerImageUri }
+if ($GameServerImageUri) {
+    $params.GameServerImageUri = $GameServerImageUri
+} elseif (-not $params.GameServerImageUri) {
+    # An empty image URI makes CloudFormation DELETE the GameLift + matchmaking
+    # stacks. Reuse whatever image the deployed stack is already running so a
+    # plain redeploy (e.g. a web or API change) can't tear the fleet down.
+    $current = (aws cloudformation describe-stacks --stack-name $stack `
+        --query "Stacks[0].Parameters[?ParameterKey=='GameServerImageUri'].ParameterValue | [0]" `
+        --output text 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $current -and $current -ne 'None') {
+        Write-Host "==> Reusing deployed game server image: $current"
+        $params.GameServerImageUri = $current.Trim()
+    }
+}
 # CloudFormation rejects bare `Key=` for empty values, so quote empties.
 $overrides = $params.PSObject.Properties | ForEach-Object {
     $v = [string]$_.Value

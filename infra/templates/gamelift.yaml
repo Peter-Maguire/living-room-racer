@@ -140,9 +140,23 @@ Resources:
       InstanceType: !Ref FleetInstanceType
       BillingType: ON_DEMAND
       GameServerContainerGroupsPerInstance: !Ref GroupsPerInstance
+      # Inbound rules must cover the CONNECTION port range (what players dial),
+      # not the container ports (GamePort..GamePortRangeEnd): GameLift maps each
+      # container port to a host port in 32768-60999, and opening only the
+      # container ports makes every client connection time out at the security
+      # group. Inbound rules are capped at 60000.
+      #
+      # Deliberately TWO ranges that skip 37016-37031 (the old container-port
+      # rule): GameLift rejects a single update that authorizes a range
+      # overlapping one it is revoking. Keep these non-overlapping with
+      # GamePort..GamePortRangeEnd if you change either.
       InstanceInboundPermissions:
-        - FromPort: !Ref GamePort
-          ToPort: !Ref GamePortRangeEnd
+        - FromPort: 32768
+          ToPort: 37015
+          IpRange: 0.0.0.0/0
+          Protocol: TCP
+        - FromPort: 37032
+          ToPort: 60000
           IpRange: 0.0.0.0/0
           Protocol: TCP
 

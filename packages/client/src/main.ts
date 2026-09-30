@@ -165,11 +165,15 @@ function main(): void {
       const conn = await resolveConnection(config, localPlayerId, (s) => {
         overlay.showMatchmaking(s.message, s.elapsedSeconds, s.phase === 'failed');
       });
-      net.connect(conn.url, {
-        playerSessionId: conn.playerSessionId,
-        displayName,
-        carSkin: 'default',
-      });
+      net.connect(
+        conn.url,
+        {
+          playerSessionId: conn.playerSessionId,
+          displayName,
+          carSkin: 'default',
+        },
+        conn.path,
+      );
       overlay.showMatchmaking('Connecting to the race…');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
