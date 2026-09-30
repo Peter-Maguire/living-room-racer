@@ -1,4 +1,23 @@
 import { z } from 'zod';
+import type { SurfaceType } from './types.js';
+
+const surfaceTypeSchema = z.enum(['floor', 'wood', 'rug', 'tile', 'milk', 'cushion']);
+// Compile-time check that the schema and the shared SurfaceType union agree
+// (assignable both ways), so adding a surface in one place can't be forgotten.
+type SchemaSurface = z.infer<typeof surfaceTypeSchema>;
+const _surfacesMatch: [SchemaSurface] extends [SurfaceType]
+  ? [SurfaceType] extends [SchemaSurface]
+    ? true
+    : never
+  : never = true;
+void _surfacesMatch;
+
+/** A stretch of road, by lap fraction [from, to), with its own surface. from > to wraps the start line. */
+export const surfaceSectionSchema = z.object({
+  from: z.number().min(0).max(1),
+  to: z.number().min(0).max(1),
+  surface: surfaceTypeSchema,
+});
 
 /**
  * Track = authored content. A track defines the drivable surface, ordered
@@ -63,11 +82,16 @@ export const trackSchema = z.object({
   spawnGrid: z.array(z.object({ position: vec3Schema, rotation: quatSchema })),
   /** Positions of power-up pickup pads on the track (XZ used; y for render). */
   pickups: z.array(vec3Schema).default([]),
+  /** Surface everywhere not covered by a section below. */
+  defaultSurface: surfaceTypeSchema.default('floor'),
+  /** Surface overrides by lap fraction; later entries win on overlap. */
+  surfaces: z.array(surfaceSectionSchema).default([]),
   /** World Y below which a car counts as fallen off the table. */
   fallY: z.number(),
 });
 
 export type Track = z.infer<typeof trackSchema>;
+export type SurfaceSection = z.infer<typeof surfaceSectionSchema>;
 export type Checkpoint = z.infer<typeof checkpointSchema>;
 export type RecoveryPoint = z.infer<typeof recoveryPointSchema>;
 
@@ -124,4 +148,33 @@ export function findRecoveryPoint(
     }
   }
   return best;
+}
+
+/** Surface at a lap fraction t (0..1). */
+export function surfaceAtT(track: Track, t: number): SurfaceType {
+  let found: SurfaceType = track.defaultSurface;
+  for (const s of track.surfaces) {
+    const inside = s.from <= s.to ? t >= s.from && t < s.to : t >= s.from || t < s.to;
+    if (inside) found = s.surface;
+  }
+  return found;
+}
+
+/**
+ * Surface under a world position: the section containing the nearest racing-line
+ * sample. Pure and deterministic (used inside the shared sim). Tracks with no
+ * sections skip the search entirely.
+ */
+export function surfaceAt(track: Track, pos: { x: number; z: number }): SurfaceType {
+  if (track.surfaces.length === 0) return track.defaultSurface;
+  let bestT = 0;
+  let bestD = Infinity;
+  for (const p of track.recoverySpline) {
+    const d = distSqXZ(pos, p.position);
+    if (d < bestD) {
+      bestD = d;
+      bestT = p.t;
+    }
+  }
+  return surfaceAtT(track, bestT);
 }

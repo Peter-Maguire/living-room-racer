@@ -1,3 +1,5 @@
+import type { SurfaceType } from './types.js';
+
 /**
  * Shared tuning constants used by BOTH the client (prediction) and the server
  * (authoritative sim). These MUST be identical on both sides or prediction and
@@ -58,3 +60,36 @@ export const PICKUP_RESPAWN_TICKS = SIM_TICK_RATE * 5; // ~5s
 export const BOOST_MULTIPLIER = 1.6;
 /** Duration of a boost, in seconds. */
 export const BOOST_SECONDS = 1.5;
+
+// --- Surfaces (grip) --------------------------------------------------------
+
+/**
+ * How a surface changes handling. The sim is arcade-kinematic (velocity follows
+ * heading), so grip is modelled as:
+ *  - traction: multiplies acceleration and braking
+ *  - steer:    multiplies steering authority
+ *  - topSpeed: multiplies the speed cap (drag)
+ *  - follow:   how fast the velocity direction catches up to the heading, per
+ *              second. Infinity = locked to the heading (no sliding). Lower
+ *              values let the car slide wide in corners.
+ * 'floor' is all 1 / Infinity, so tracks without surface tags drive exactly as
+ * they did before surfaces existed.
+ */
+export interface SurfaceParams {
+  traction: number;
+  steer: number;
+  topSpeed: number;
+  follow: number;
+}
+
+export const SURFACES: Record<SurfaceType, SurfaceParams> = {
+  floor: { traction: 1, steer: 1, topSpeed: 1, follow: Infinity },
+  wood: { traction: 1, steer: 0.95, topSpeed: 1, follow: Infinity },
+  rug: { traction: 1.15, steer: 1.1, topSpeed: 0.92, follow: Infinity },
+  tile: { traction: 0.75, steer: 0.7, topSpeed: 1, follow: 6 },
+  milk: { traction: 0.4, steer: 0.45, topSpeed: 0.85, follow: 2.5 },
+  cushion: { traction: 0.8, steer: 0.85, topSpeed: 0.7, follow: Infinity },
+};
+
+/** Deceleration (m/s^2) applied when a car is above the current speed cap. */
+export const CAR_OVERSPEED_DECEL = 40;

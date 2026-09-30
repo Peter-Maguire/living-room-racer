@@ -1,6 +1,10 @@
 // Headless drivability check: a pure-pursuit autopilot drives each track
 // through the real shared sim and must finish the race with few recoveries.
-import { TRACKS, stepWorld, FIXED_DT, RACE_LAPS, headingFromQuatY } from '../dist/index.js';
+import { TRACKS, stepWorld, FIXED_DT, RACE_LAPS, headingFromQuatY, surfaceAtT } from '../dist/index.js';
+
+// Speed the bot is willing to carry into a corner, by surface. Stands in for a
+// player who has learned where the slippery bits are.
+const CORNER_SPEED = { floor: 18, wood: 18, rug: 16, cushion: 12, tile: 11, milk: 6 };
 
 const MAX_SECONDS = 180;
 const MAX_RECOVERIES = 2;
@@ -41,10 +45,16 @@ for (const track of Object.values(TRACKS)) {
     const near = Math.max(2, Math.round((3 + Math.abs(car.speed) * 0.45) / spacing));
     const far = near + Math.round(8 / spacing);
     const eNear = errTo(near), eFar = errTo(far);
+    // Look well ahead for the surface and the bend; brake to the corner speed.
+    const lookT = line[(idx + Math.round(16 / spacing)) % n].t;
+    const surfaceAhead = surfaceAtT(track, lookT);
+    const bendAhead = Math.abs(errTo(Math.round(16 / spacing)));
+    const target = bendAhead > 0.35 ? CORNER_SPEED[surfaceAhead] : 99;
+    const tooFast = car.speed > target + 0.5;
     const input = {
       seq: tick, steer: Math.max(-1, Math.min(1, -eNear * 2.2)),
-      throttle: Math.abs(eFar) > 0.9 ? 0.25 : Math.abs(eFar) > 0.5 ? 0.6 : 1,
-      brake: 0, drift: false, useItem: false,
+      throttle: tooFast ? 0 : Math.abs(eFar) > 0.9 ? 0.25 : Math.abs(eFar) > 0.5 ? 0.6 : 1,
+      brake: tooFast ? 1 : 0, drift: false, useItem: false,
     };
     stepWorld(world, new Map([['bot', input]]), track, FIXED_DT);
     if (car.phase === 'recovering' && prevPhase !== 'recovering') recoveries++;

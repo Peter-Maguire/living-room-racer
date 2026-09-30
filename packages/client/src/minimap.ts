@@ -1,4 +1,4 @@
-import type { Snapshot, Track } from '@racer/shared';
+import { surfaceAtT, type Snapshot, type Track } from '@racer/shared';
 
 const SIZE = 170;
 const PAD = 12;
@@ -111,8 +111,18 @@ export class Minimap {
  * Self-contained top-down SVG of a track's centerline, for the lobby's track
  * preview. Same projection idea as the minimap, but emitted as markup.
  */
+const PREVIEW_COLORS: Record<string, string> = {
+  floor: '#e3e6ee',
+  wood: '#c8925a',
+  rug: '#d2693a',
+  tile: '#9fc4e8',
+  milk: '#fffbe8',
+  cushion: '#b98ad0',
+};
+
 export function trackPreviewSvg(track: Track, size = 120): string {
-  const pts = track.recoverySpline.map((p) => p.position);
+  const spline = track.recoverySpline;
+  const pts = spline.map((p) => p.position);
   const xs = pts.map((p) => p.x);
   const zs = pts.map((p) => p.z);
   const minX = Math.min(...xs);
@@ -122,12 +132,24 @@ export function trackPreviewSvg(track: Track, size = 120): string {
   const s = (size - pad * 2) / span;
   const w = (Math.max(...xs) - minX) * s;
   const h = (Math.max(...zs) - minZ) * s;
-  const d = pts
-    .map((p, i) => {
-      const x = pad + (size - pad * 2 - w) / 2 + (p.x - minX) * s;
-      const y = pad + (size - pad * 2 - h) / 2 + (p.z - minZ) * s;
-      return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)} ${y.toFixed(1)}`;
-    })
+  const proj = (p: { x: number; z: number }): string => {
+    const x = pad + (size - pad * 2 - w) / 2 + (p.x - minX) * s;
+    const y = pad + (size - pad * 2 - h) / 2 + (p.z - minZ) * s;
+    return `${x.toFixed(1)} ${y.toFixed(1)}`;
+  };
+  // One short segment per spline step, coloured by the surface at its start, so
+  // grip changes are visible before the race. Runs of one surface share a path.
+  const n = spline.length;
+  const runs: { color: string; d: string }[] = [];
+  for (let i = 0; i < n; i++) {
+    const color = PREVIEW_COLORS[surfaceAtT(track, spline[i]!.t)] ?? PREVIEW_COLORS.floor!;
+    const seg = `M${proj(pts[i]!)}L${proj(pts[(i + 1) % n]!)}`;
+    const last = runs[runs.length - 1];
+    if (last && last.color === color) last.d += seg;
+    else runs.push({ color, d: seg });
+  }
+  const paths = runs
+    .map((r) => `<path d="${r.d}" fill="none" stroke="${r.color}" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>`)
     .join('');
-  return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" aria-hidden="true"><path d="${d}Z" fill="none" stroke="rgba(255,255,255,0.75)" stroke-width="6" stroke-linejoin="round"/></svg>`;
+  return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" aria-hidden="true">${paths}</svg>`;
 }

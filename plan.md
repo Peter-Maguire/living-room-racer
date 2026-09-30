@@ -384,7 +384,8 @@ Post-MVP polish and content. None of these are required for a playable race — 
 | Goal | Status |
 |------|--------|
 | 15.1 Car colours | Done: server-assigned by slot, sent in `LobbyState`. |
-| 15.2 More tracks | Partly done: Breakfast Bar, Toy Box, Desk Cable added via `tracks/build.ts`; `pnpm --filter @racer/shared validate` checks authoring rules and drives each track headlessly. Not done: grip-dependent tracks (Kitchen Tile, Bathmat), Sofa Canyon (banking), Laundry Basket (wall-ride). |
+| 15.2 More tracks | Mostly done: Breakfast Bar, Toy Box, Desk Cable, Kitchen Tile Sprint and Bathmat Rally added via `tracks/build.ts`. `pnpm --filter @racer/shared build && pnpm --filter @racer/shared validate` checks authoring rules, surface physics, and drives every track headlessly. Not done: Sofa Cushion Canyon (banking) and Laundry Basket Loop (wall-ride), which need sim support beyond surfaces. |
+| Surface grip | Done: per-section `surfaces` + `defaultSurface` on tracks; traction/steer/top-speed/slide per surface in `SURFACES` (constants.ts); snapshots carry `speed` so prediction stays exact while sliding. Feeds tyre-noise voicing (15.4). |
 | 15.3 UI | Done except the chromatic-shift/edge-blur polish. |
 | 15.4 Noises | Done (procedural). Sampled sfx via howler.js not started (no assets). |
 | 15.5 Soundtrack | Done (procedural, stem-based). |

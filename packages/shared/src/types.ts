@@ -3,6 +3,9 @@
 export type Vec3 = { x: number; y: number; z: number };
 export type Quat = { x: number; y: number; z: number; w: number };
 
+/** What a stretch of road is made of; sets grip (see SURFACES in constants). */
+export type SurfaceType = 'floor' | 'wood' | 'rug' | 'tile' | 'milk' | 'cushion';
+
 /** Per-car lifecycle state, authoritative on the server. */
 export type CarPhase = 'countdown' | 'racing' | 'recovering' | 'finished';
 
@@ -36,6 +39,11 @@ export interface CarState {
   rotation: Quat;
   linearVelocity: Vec3;
   /** Index of the last checkpoint passed, in order. */
+  /**
+   * Signed driven speed along the heading (m/s). Differs from |linearVelocity|
+   * on low-grip surfaces, where the car slides. Optional for old snapshots.
+   */
+  speed?: number;
   lastCheckpoint: number;
   lap: number;
   /** Finishing place once phase === 'finished' (1-based), else 0. */

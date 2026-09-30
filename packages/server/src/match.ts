@@ -370,6 +370,7 @@ export class Match {
         position: c.position,
         rotation: { x: 0, y: Math.sin(c.heading / 2), z: 0, w: Math.cos(c.heading / 2) },
         linearVelocity: c.velocity,
+        speed: c.speed,
         lastCheckpoint: c.lastCheckpoint,
         lap: c.lap,
         place: c.place,

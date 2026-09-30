@@ -35,6 +35,23 @@ const CAMERA_TILT_DEG = 21;
 
 /** Extra room around the track extents so cars near the edge aren't clipped. */
 const CAMERA_MARGIN = 1.18;
+/** Overlay colours for tagged road sections (floor is the plain asphalt). */
+/** Base road colour by the track's default surface. */
+const BASE_ROAD_COLOR: Record<string, number> = {
+  floor: 0x33343a,
+  wood: 0x5a4028,
+  rug: 0x7a4a3a,
+  tile: 0x56606e,
+  milk: 0xd8d4c8,
+  cushion: 0x6a5478,
+};
+const SURFACE_TINT: Partial<Record<string, { color: number; opacity: number }>> = {
+  rug: { color: 0xa0522d, opacity: 0.85 },
+  tile: { color: 0x9fb4c8, opacity: 0.5 },
+  milk: { color: 0xf4f1e8, opacity: 0.75 },
+  cushion: { color: 0x8a6a9a, opacity: 0.8 },
+  wood: { color: 0x8b5a2b, opacity: 0.6 },
+};
 /** Resting vertical FOV; speed/boost widen it temporarily for a sense of speed. */
 const BASE_FOV = 50;
 const MAX_SPEED_FOV_KICK = 4;
@@ -200,13 +217,24 @@ export class Renderer {
     const mesh = new THREE.Mesh(
       geom,
       new THREE.MeshStandardMaterial({
-        color: 0x33343a, // dark asphalt, clearly distinct from the floor
+        // Dark asphalt by default, clearly distinct from the floor; other default
+        // surfaces (e.g. a tiled kitchen) recolour the whole road.
+        color: BASE_ROAD_COLOR[track.defaultSurface] ?? 0x33343a,
         roughness: 0.8,
         side: THREE.DoubleSide,
       }),
     );
     mesh.receiveShadow = true;
     group.add(mesh);
+
+    // Surface tints: each tagged section gets a coloured overlay so players can
+    // read where grip changes. A tile/floor-only track adds nothing here.
+    for (const sec of track.surfaces) {
+      const tint = SURFACE_TINT[sec.surface];
+      if (!tint) continue;
+      const overlay = this.buildSectionMesh(track, sec.from, sec.to, half, tint);
+      if (overlay) group.add(overlay);
+    }
 
     // Start/finish line marker at the finish checkpoint.
     const finish = track.checkpoints.find((c) => c.isFinish);
@@ -240,6 +268,65 @@ export class Renderer {
     // switching tracks (or adding new ones) doesn't need hand-tuned numbers.
     this.trackBounds = computeTrackBounds(track, half);
     this.fitToTrack();
+  }
+
+  /** A ribbon over the spline samples in [from, to) (wrapping), slightly above the road. */
+  private buildSectionMesh(
+    track: Track,
+    from: number,
+    to: number,
+    half: number,
+    tint: { color: number; opacity: number },
+  ): THREE.Mesh | null {
+    const spline = track.recoverySpline;
+    const n = spline.length;
+    const inside = (t: number) => (from <= to ? t >= from && t < to : t >= from || t < to);
+    // Sample indices in driving order, including one past the end to close the gap.
+    const idx: number[] = [];
+    for (let k = 0; k < n; k++) {
+      const i = k;
+      if (inside(spline[i]!.t)) idx.push(i);
+    }
+    if (idx.length < 2) return null;
+    // Rotate so a wrapping section starts at its first in-range sample.
+    const start = idx.findIndex((_, j) => (idx[j]! + 1) % n !== idx[(j + 1) % idx.length]);
+    const ordered = start >= 0 ? [...idx.slice(start + 1), ...idx.slice(0, start + 1)] : idx;
+    ordered.push((ordered[ordered.length - 1]! + 1) % n);
+
+    const positions: number[] = [];
+    const indices: number[] = [];
+    ordered.forEach((i, r) => {
+      const cur = spline[i]!.position;
+      const next = spline[(i + 1) % n]!.position;
+      let tx = next.x - cur.x;
+      let tz = next.z - cur.z;
+      const len = Math.hypot(tx, tz) || 1;
+      tx /= len;
+      tz /= len;
+      positions.push(cur.x - tz * half, 0.02, cur.z + tx * half);
+      positions.push(cur.x + tz * half, 0.02, cur.z - tx * half);
+      if (r > 0) {
+        const a = (r - 1) * 2;
+        indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+      }
+    });
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geom.setIndex(indices);
+    geom.computeVertexNormals();
+    const mesh = new THREE.Mesh(
+      geom,
+      new THREE.MeshStandardMaterial({
+        color: tint.color,
+        roughness: 0.5,
+        transparent: true,
+        opacity: tint.opacity,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    mesh.receiveShadow = true;
+    return mesh;
   }
 
   /** Point the camera, floor, and shadow camera at the loaded track. */

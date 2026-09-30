@@ -15,7 +15,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "tsc -p tsconfig.json --watch",
-    "validate": "node scripts/validate-tracks.mjs && node scripts/drive-tracks.mjs"
+    "validate": "node scripts/validate-tracks.mjs && node scripts/check-surfaces.mjs && node scripts/drive-tracks.mjs"
   },
   "dependencies": {
     "zod": "^3.23.8"

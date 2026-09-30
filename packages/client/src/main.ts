@@ -4,6 +4,7 @@ import {
   RACE_LAPS,
   OVAL_TRACK,
   carColor,
+  surfaceAt,
   getTrack,
   headingToQuatY,
   randomRacerName,
@@ -288,7 +289,10 @@ function main(): void {
       // Tyre noise tracks sideways slip: velocity component across the heading.
       const lateral =
         local.velocity.x * Math.cos(local.heading) - local.velocity.z * Math.sin(local.heading);
-      audio.setTyre(Math.min(1, (Math.abs(lateral) / CAR_MAX_SPEED) * 3), 'floor');
+      audio.setTyre(
+        Math.min(1, (Math.abs(lateral) / CAR_MAX_SPEED) * 3),
+        surfaceAt(track, local.position),
+      );
       // Collision: a sudden loss of speed in one frame. Car-vs-car if a rival is
       // close, otherwise scenery (walls, props).
       const drop = prevLocalSpeed - Math.abs(local.speed);

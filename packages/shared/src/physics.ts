@@ -7,6 +7,7 @@ import {
   CAR_COLLISION_RESTITUTION,
   CAR_DRIFT_GRIP,
   CAR_MAX_SPEED,
+  CAR_OVERSPEED_DECEL,
   CAR_STEER_RATE,
   FALL_Y_THRESHOLD,
   OFF_TRACK_TICKS_BEFORE_RECOVERY,
@@ -15,11 +16,14 @@ import {
   RACE_LAPS,
   RECOVERY_LIFT_SECONDS,
   RECOVERY_LOCKOUT_SECONDS,
+  SURFACES,
+  type SurfaceParams,
 } from './constants.js';
 import {
   findRecoveryPoint,
   isInsideCheckpoint,
   nextCheckpointIndex,
+  surfaceAt,
   type Track,
 } from './track.js';
 import type { CarPhase, ItemType, PlayerInput, Vec3 } from './types.js';
@@ -234,9 +238,10 @@ function stepCar(
   const controllable = car.lockoutTimer <= 0;
   if (car.lockoutTimer > 0) car.lockoutTimer -= dt;
 
+  const surface = SURFACES[surfaceAt(track, car.position)];
   updateItems(car, controllable ? input : undefined, track, world, dt);
-  driveCar(car, controllable ? input : undefined, dt);
-  integrate(car, dt);
+  driveCar(car, controllable ? input : undefined, surface, dt);
+  integrate(car, surface, dt);
   updateCheckpointProgress(car, track);
   handleOffTrack(car, track);
 }
@@ -281,10 +286,15 @@ function updateItems(
 }
 
 /** Arcade longitudinal + steering model. Deterministic; no RNG, no wall-clock. */
-function driveCar(car: SimCar, input: PlayerInput | undefined, dt: number): void {
+function driveCar(
+  car: SimCar,
+  input: PlayerInput | undefined,
+  surface: SurfaceParams,
+  dt: number,
+): void {
   const boosting = car.boostTimer > 0;
-  const maxSpeed = CAR_MAX_SPEED * (boosting ? BOOST_MULTIPLIER : 1);
-  const accel = CAR_ACCEL * (boosting ? BOOST_MULTIPLIER : 1);
+  const maxSpeed = CAR_MAX_SPEED * surface.topSpeed * (boosting ? BOOST_MULTIPLIER : 1);
+  const accel = CAR_ACCEL * surface.traction * (boosting ? BOOST_MULTIPLIER : 1);
 
   if (!input) {
     // Coast: apply mild rolling drag toward zero (boost still carries speed).
@@ -293,12 +303,14 @@ function driveCar(car: SimCar, input: PlayerInput | undefined, dt: number): void
   }
 
   if (input.brake > 0 && car.speed > 0) {
-    car.speed = Math.max(0, car.speed - CAR_BRAKE * input.brake * dt);
+    car.speed = Math.max(0, car.speed - CAR_BRAKE * surface.traction * input.brake * dt);
   } else {
     car.speed += accel * input.throttle * dt;
   }
-  // Clamp: full forward speed (boosted), limited reverse.
-  car.speed = clamp(car.speed, -CAR_MAX_SPEED * 0.4, maxSpeed);
+  // Above the cap (boost ended, or rolled onto a draggier surface): bleed off
+  // quickly rather than snapping. Limited reverse.
+  if (car.speed > maxSpeed) car.speed = Math.max(maxSpeed, car.speed - CAR_OVERSPEED_DECEL * dt);
+  car.speed = Math.max(car.speed, -CAR_MAX_SPEED * 0.4);
 
   // Steering authority scales with speed (can't turn while nearly stopped) and
   // is sharper while drifting. Sign follows travel direction so reverse steers
@@ -306,16 +318,26 @@ function driveCar(car: SimCar, input: PlayerInput | undefined, dt: number): void
   const speedFactor = Math.min(1, Math.abs(car.speed) / (CAR_MAX_SPEED * 0.5));
   const driftMul = input.drift ? 1 + (1 - CAR_DRIFT_GRIP) : 1;
   const dir = car.speed >= 0 ? 1 : -1;
-  car.heading -= input.steer * CAR_STEER_RATE * speedFactor * driftMul * dir * dt;
+  car.heading -=
+    input.steer * CAR_STEER_RATE * surface.steer * speedFactor * driftMul * dir * dt;
 }
 
 /** Advance position from heading + speed. */
-function integrate(car: SimCar, dt: number): void {
-  car.velocity = {
-    x: Math.sin(car.heading) * car.speed,
-    y: car.velocity.y,
-    z: Math.cos(car.heading) * car.speed,
-  };
+function integrate(car: SimCar, surface: SurfaceParams, dt: number): void {
+  const wantX = Math.sin(car.heading) * car.speed;
+  const wantZ = Math.cos(car.heading) * car.speed;
+  // The velocity direction chases the heading. On normal surfaces that's
+  // instant (exactly the pre-surface behaviour); on slick ones it lags, which
+  // is the slide. Linear blend (not exp) to keep the maths plain and portable.
+  const k = Math.min(1, surface.follow * dt);
+  car.velocity =
+    k >= 1
+      ? { x: wantX, y: car.velocity.y, z: wantZ }
+      : {
+          x: car.velocity.x + (wantX - car.velocity.x) * k,
+          y: car.velocity.y,
+          z: car.velocity.z + (wantZ - car.velocity.z) * k,
+        };
   car.position.x += car.velocity.x * dt;
   car.position.z += car.velocity.z * dt;
 }
@@ -364,10 +386,6 @@ function enterRecovery(car: SimCar): void {
 
 // --- small deterministic helpers ------------------------------------------
 
-function clamp(v: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, v));
-}
-
 /** Move `v` toward `target` by at most `maxDelta`. */
 function approach(v: number, target: number, maxDelta: number): number {
   if (v > target) return Math.max(target, v - maxDelta);
@@ -400,6 +418,7 @@ export function carStateToSimCar(state: {
   position: Vec3;
   rotation: { x: number; y: number; z: number; w: number };
   linearVelocity: Vec3;
+  speed?: number;
   lastCheckpoint: number;
   lap: number;
   place: number;
@@ -410,7 +429,10 @@ export function carStateToSimCar(state: {
   // Project velocity onto heading direction to recover signed speed.
   const forwardX = Math.sin(heading);
   const forwardZ = Math.cos(heading);
+  // Prefer the server's driven speed: on slippery surfaces the velocity lags
+  // the heading, so its projection understates the real speed.
   const speed =
+    state.speed ??
     state.linearVelocity.x * forwardX + state.linearVelocity.z * forwardZ;
   return {
     playerId: state.playerId,

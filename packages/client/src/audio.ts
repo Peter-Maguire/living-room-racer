@@ -15,12 +15,14 @@
  * click/keypress (the lobby "ready" button is a good spot).
  */
 
+import type { SurfaceType } from '@racer/shared';
+
 const VOLUME_KEY = 'racer.audio.volume';
 const MUTED_KEY = 'racer.audio.muted';
 const MUSIC_MUTED_KEY = 'racer.audio.musicMuted';
 const MUSIC_LEVEL = 0.45;
 
-export type Surface = 'floor' | 'rug' | 'wood' | 'cushion';
+export type Surface = SurfaceType;
 
 /** Tyre-noise voicing per surface: band centre (Hz), resonance, loudness. */
 const SURFACES: Record<Surface, { freq: number; q: number; gain: number }> = {
@@ -28,6 +30,8 @@ const SURFACES: Record<Surface, { freq: number; q: number; gain: number }> = {
   wood: { freq: 2600, q: 1.3, gain: 0.9 },
   rug: { freq: 700, q: 0.6, gain: 0.6 },
   cushion: { freq: 380, q: 0.5, gain: 0.45 },
+  tile: { freq: 3200, q: 1.5, gain: 1.15 }, // bright squeal
+  milk: { freq: 1200, q: 0.4, gain: 0.7 }, // wet, broad hiss
 };
 
 /** A continuous engine note: layered oscillators + noise through a lowpass. */
@@ -323,8 +327,8 @@ export class AudioEngine {
 
   /**
    * Tyre squeal/scrub. `slip` (0..1) is how far the car is sliding sideways;
-   * `surface` re-voices the noise (cushions muffled, tile bright). Tracks don't
-   * carry surface tags yet, so callers pass 'floor'; the hook is ready for them.
+   * `surface` re-voices the noise (cushions muffled, tile bright); callers pass
+   * the track's surface under the car.
    */
   setTyre(slip: number, surface: Surface): void {
     if (!this.ctx || !this.tyre) return;

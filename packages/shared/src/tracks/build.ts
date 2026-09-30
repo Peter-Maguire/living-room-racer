@@ -1,5 +1,6 @@
 import { MAX_PLAYERS } from '../constants.js';
-import { trackSchema, type Track } from '../track.js';
+import { trackSchema, type SurfaceSection, type Track } from '../track.js';
+import type { SurfaceType } from '../types.js';
 
 /**
  * Track-authoring helper. A track is described by a closed loop of control
@@ -28,6 +29,10 @@ export interface TrackSpec {
   checkpointCount: number;
   /** Positions of pickup pads as fractions (0..1) of the lap. */
   pickups: number[];
+  /** Surface for the whole road unless a section below overrides it. */
+  defaultSurface?: SurfaceType;
+  /** Surface sections by lap fraction (from > to wraps the start line). */
+  surfaces?: SurfaceSection[];
   /** Metres between starting-grid rows (defaults to 3.2). */
   gridRowGap?: number;
 }
@@ -187,6 +192,8 @@ export function buildTrack(spec: TrackSpec): Track {
     recoverySpline,
     spawnGrid,
     pickups,
+    defaultSurface: spec.defaultSurface ?? 'floor',
+    surfaces: spec.surfaces ?? [],
     fallY: -2,
   });
 }
