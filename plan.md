@@ -379,6 +379,18 @@ Do these as part of P4 (AWS integration), roughly in this order:
 
 Post-MVP polish and content. None of these are required for a playable race — they're the "makes it feel like a real game" layer. Each entry notes what already exists in the codebase and what actually has to change, since several of these are cheaper (or more expensive) than they first look.
 
+**Implementation status** (details in each section's notes below may describe the pre-implementation state):
+
+| Goal | Status |
+|------|--------|
+| 15.1 Car colours | Done: server-assigned by slot, sent in `LobbyState`. |
+| 15.2 More tracks | Partly done: Breakfast Bar, Toy Box, Desk Cable added via `tracks/build.ts`; `pnpm --filter @racer/shared validate` checks authoring rules and drives each track headlessly. Not done: grip-dependent tracks (Kitchen Tile, Bathmat), Sofa Canyon (banking), Laundry Basket (wall-ride). |
+| 15.3 UI | Done except the chromatic-shift/edge-blur polish. |
+| 15.4 Noises | Done (procedural). Sampled sfx via howler.js not started (no assets). |
+| 15.5 Soundtrack | Done (procedural, stem-based). |
+| 15.6 Power-ups | Not started. |
+| 15.7 Real graphics | Shadows and track-fitted camera done; asset pipeline and art not started. |
+
 ### 15.1 Unique car colours, consistent across all players
 
 Every car gets a distinct colour, and **all players see the same car as the same colour**. Consistency is the whole requirement — if each client picked colours locally, "the blue car cut me off" would mean nothing in voice chat.

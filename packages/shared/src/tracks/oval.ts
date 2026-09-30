@@ -100,7 +100,7 @@ function buildSpawnGrid() {
   // for the diagonal race-grid look.
   const grid = [];
   const laneOffset = TRACK_HALF_WIDTH * 0.6; // lateral gap between columns
-  const tStep = 0.018; // parameter gap between rows (backward around the loop)
+  const tStep = 0.026; // parameter gap between rows (backward around the loop)
   const tStart = 1 - 0.012; // first row just behind start/finish (wraps < 1)
   for (let i = 0; i < MAX_PLAYERS; i++) {
     const col = i % 2; // 0 = left lane, 1 = right lane
