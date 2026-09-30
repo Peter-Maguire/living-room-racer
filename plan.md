@@ -384,7 +384,8 @@ Post-MVP polish and content. None of these are required for a playable race — 
 | Goal | Status |
 |------|--------|
 | 15.1 Car colours | Done: server-assigned by slot, sent in `LobbyState`. |
-| 15.2 More tracks | Mostly done: Breakfast Bar, Toy Box, Desk Cable, Kitchen Tile Sprint and Bathmat Rally added via `tracks/build.ts`. `pnpm --filter @racer/shared build && pnpm --filter @racer/shared validate` checks authoring rules, surface physics, and drives every track headlessly. Not done: Sofa Cushion Canyon (banking) and Laundry Basket Loop (wall-ride), which need sim support beyond surfaces. |
+| 15.2 More tracks | Done: nine tracks in total. Added Breakfast Bar, Toy Box, Desk Cable, Kitchen Tile Sprint, Bathmat Rally, Sofa Cushion Canyon (banking, soft edges, undulation) and Laundry Basket Loop (ramps and steep wall-ride hairpins with a minimum speed). `pnpm --filter @racer/shared build && pnpm --filter @racer/shared validate` checks authoring rules, surface and relief physics, and drives every track headlessly. |
+| Relief (height, banking, walls) | Done: control points take a height, `banks` sections tilt the road (leaning into the turn, pivoting about the low edge), and wall sections have a `minSpeed`. The sim keeps cars on the surface and applies slope and bank effects; cars tilt to the road on the client. Still single-level in plan view by design. |
 | Surface grip | Done: per-section `surfaces` + `defaultSurface` on tracks; traction/steer/top-speed/slide per surface in `SURFACES` (constants.ts); snapshots carry `speed` so prediction stays exact while sliding. Feeds tyre-noise voicing (15.4). |
 | 15.3 UI | Done except the chromatic-shift/edge-blur polish. |
 | 15.4 Noises | Done (procedural). Sampled sfx via howler.js not started (no assets). |

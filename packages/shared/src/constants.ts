@@ -91,5 +91,12 @@ export const SURFACES: Record<SurfaceType, SurfaceParams> = {
   cushion: { traction: 0.8, steer: 0.85, topSpeed: 0.7, follow: Infinity },
 };
 
+/** Steering authority gained per unit sin(bank): banked roads let you corner harder. */
+export const BANK_STEER_BONUS = 0.8;
+/** Traction gained per unit sin(bank). */
+export const BANK_TRACTION_BONUS = 0.3;
+/** m/s^2 lost per unit of uphill slope along the direction of travel. */
+export const SLOPE_ACCEL = 4.9;
+
 /** Deceleration (m/s^2) applied when a car is above the current speed cap. */
 export const CAR_OVERSPEED_DECEL = 40;

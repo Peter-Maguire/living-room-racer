@@ -7,7 +7,10 @@ import {
   CAR_COLLISION_RESTITUTION,
   CAR_DRIFT_GRIP,
   CAR_MAX_SPEED,
+  BANK_STEER_BONUS,
+  BANK_TRACTION_BONUS,
   CAR_OVERSPEED_DECEL,
+  SLOPE_ACCEL,
   CAR_STEER_RATE,
   FALL_Y_THRESHOLD,
   OFF_TRACK_TICKS_BEFORE_RECOVERY,
@@ -22,8 +25,10 @@ import {
 import {
   findRecoveryPoint,
   isInsideCheckpoint,
+  hasRelief,
   nextCheckpointIndex,
-  surfaceAt,
+  surfaceAtT,
+  trackSampleAt,
   type Track,
 } from './track.js';
 import type { CarPhase, ItemType, PlayerInput, Vec3 } from './types.js';
@@ -238,12 +243,41 @@ function stepCar(
   const controllable = car.lockoutTimer <= 0;
   if (car.lockoutTimer > 0) car.lockoutTimer -= dt;
 
-  const surface = SURFACES[surfaceAt(track, car.position)];
+  const relief = hasRelief(track);
+  // Tracks with neither sections nor relief never pay for the road lookup.
+  const sample =
+    relief || track.surfaces.length > 0 ? trackSampleAt(track, car.position) : null;
+  const base = SURFACES[sample ? surfaceAtT(track, sample.t) : track.defaultSurface];
+  // Banked roads let you corner harder; uphill bleeds speed, downhill gives it back.
+  const bankSin = sample ? Math.abs(Math.sin(sample.bank)) : 0;
+  const surface =
+    bankSin > 0
+      ? {
+          ...base,
+          steer: base.steer * (1 + BANK_STEER_BONUS * bankSin),
+          traction: base.traction * (1 + BANK_TRACTION_BONUS * bankSin),
+        }
+      : base;
+  const slopeDecel = sample
+    ? SLOPE_ACCEL *
+      sample.slope *
+      (Math.sin(car.heading) * sample.tx + Math.cos(car.heading) * sample.tz)
+    : 0;
+
   updateItems(car, controllable ? input : undefined, track, world, dt);
-  driveCar(car, controllable ? input : undefined, surface, dt);
+  driveCar(car, controllable ? input : undefined, surface, slopeDecel, dt);
   integrate(car, surface, dt);
   updateCheckpointProgress(car, track);
-  handleOffTrack(car, track);
+
+  // Stay glued to the road surface (ramps, banks), and slide off steep walls
+  // when too slow to hold them.
+  let stalled = false;
+  if (relief) {
+    const here = trackSampleAt(track, car.position);
+    car.position.y = here.y;
+    stalled = here.minSpeed > 0 && car.speed < here.minSpeed;
+  }
+  handleOffTrack(car, track, stalled);
 }
 
 /**
@@ -290,11 +324,13 @@ function driveCar(
   car: SimCar,
   input: PlayerInput | undefined,
   surface: SurfaceParams,
+  slopeDecel: number,
   dt: number,
 ): void {
   const boosting = car.boostTimer > 0;
   const maxSpeed = CAR_MAX_SPEED * surface.topSpeed * (boosting ? BOOST_MULTIPLIER : 1);
   const accel = CAR_ACCEL * surface.traction * (boosting ? BOOST_MULTIPLIER : 1);
+  if (car.speed > 0) car.speed -= slopeDecel * dt;
 
   if (!input) {
     // Coast: apply mild rolling drag toward zero (boost still carries speed).
@@ -364,9 +400,9 @@ function updateCheckpointProgress(car: SimCar, track: Track): void {
 }
 
 /** Off-track / fall detection -> enter recovery. */
-function handleOffTrack(car: SimCar, track: Track): void {
+function handleOffTrack(car: SimCar, track: Track, stalled: boolean): void {
   const fell = car.position.y < (track.fallY ?? FALL_Y_THRESHOLD);
-  const off = !isOnTrack(track, car.position);
+  const off = stalled || !isOnTrack(track, car.position);
   if (fell) {
     enterRecovery(car);
   } else if (off) {

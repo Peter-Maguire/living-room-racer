@@ -4,6 +4,7 @@ import {
   RACE_LAPS,
   OVAL_TRACK,
   carColor,
+  roadTilt,
   surfaceAt,
   getTrack,
   headingToQuatY,
@@ -215,8 +216,7 @@ function main(): void {
     }
   }
 
-  void beginMatchmaking();
-  // Input tick: only while racing. Sample, predict locally, and send.
+  void beginMatchmaking();  // Input tick: only while racing. Sample, predict locally, and send.
   setInterval(() => {
     if (phase !== 'racing') return;
     const sample = input.sample();
@@ -244,6 +244,7 @@ function main(): void {
         isLocal: true,
         boosting: me?.boosting ?? false,
         color: colorHexFor(local.playerId),
+        ...roadTilt(track, local.position, local.heading),
       });
     }
 
@@ -257,6 +258,7 @@ function main(): void {
         isLocal: false,
         boosting: c.boosting,
         color: colorHexFor(c.playerId),
+        ...roadTilt(track, c.position, 2 * Math.atan2(c.rotation.y, c.rotation.w)),
       });
     }
 

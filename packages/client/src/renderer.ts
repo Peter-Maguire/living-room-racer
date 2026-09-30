@@ -10,6 +10,9 @@ export interface RenderCar {
   isLocal: boolean;
   /** True while boosting, for a visual highlight. */
   boosting: boolean;
+  /** Tilt to lie on ramps and banks: pitch (nose up +) and roll (right side up +), radians. */
+  pitch?: number;
+  roll?: number;
   /**
    * Body colour (packed RGB) from the server-assigned palette index. Every
    * client renders a given player in the same colour, so colours are a reliable
@@ -191,9 +194,11 @@ export class Renderer {
       const nx = -tz; // perpendicular
       const nz = tx;
 
-      // Two edge vertices (left/right of centerline) per sample.
-      positions.push(cur.x + nx * half, 0, cur.z + nz * half);
-      positions.push(cur.x - nx * half, 0, cur.z - nz * half);
+      // Two edge vertices (left/right of centerline) per sample. Height comes
+      // from the racing line; banking raises one edge and lowers the other.
+      const rise = Math.tan(spline[i]!.bank) * half;
+      positions.push(cur.x + nx * half, cur.y + rise, cur.z + nz * half);
+      positions.push(cur.x - nx * half, cur.y - rise, cur.z - nz * half);
     }
 
     // Stitch consecutive rib pairs into quads (two triangles), wrapping around.
@@ -303,8 +308,9 @@ export class Renderer {
       const len = Math.hypot(tx, tz) || 1;
       tx /= len;
       tz /= len;
-      positions.push(cur.x - tz * half, 0.02, cur.z + tx * half);
-      positions.push(cur.x + tz * half, 0.02, cur.z - tx * half);
+      const rise = Math.tan(spline[i]!.bank) * half;
+      positions.push(cur.x - tz * half, cur.y + rise + 0.02, cur.z + tx * half);
+      positions.push(cur.x + tz * half, cur.y - rise + 0.02, cur.z - tx * half);
       if (r > 0) {
         const a = (r - 1) * 2;
         indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
@@ -444,12 +450,13 @@ export class Renderer {
         this.carMeshes.set(car.playerId, mesh);
       }
       mesh.position.set(car.position.x, car.position.y + 0.25, car.position.z);
-      mesh.quaternion.set(
-        car.rotation.x,
-        car.rotation.y,
-        car.rotation.z,
-        car.rotation.w,
-      );
+      if (car.pitch || car.roll) {
+        // Yaw from the car's heading, then lie on the road: pitch (x) and roll (z).
+        const yaw = 2 * Math.atan2(car.rotation.y, car.rotation.w);
+        mesh.rotation.set(-(car.pitch ?? 0), yaw, car.roll ?? 0, 'YXZ');
+      } else {
+        mesh.quaternion.set(car.rotation.x, car.rotation.y, car.rotation.z, car.rotation.w);
+      }
 
       const mat = mesh.material as THREE.MeshStandardMaterial;
       // Re-apply the colour every frame: lobby state (which carries the palette
@@ -465,7 +472,7 @@ export class Renderer {
 
       if (car.isLocal) {
         localSeen = true;
-        this.localRing.position.set(car.position.x, 0.04, car.position.z);
+        this.localRing.position.set(car.position.x, car.position.y + 0.04, car.position.z);
       }
     }
 

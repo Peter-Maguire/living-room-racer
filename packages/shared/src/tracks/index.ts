@@ -6,6 +6,8 @@ import { TOY_BOX_TRACK } from './toyBox.js';
 import { DESK_CABLE_TRACK } from './deskCable.js';
 import { KITCHEN_TILE_TRACK } from './kitchenTile.js';
 import { BATHMAT_TRACK } from './bathmat.js';
+import { SOFA_CANYON_TRACK } from './sofaCanyon.js';
+import { LAUNDRY_BASKET_TRACK } from './laundryBasket.js';
 
 export { OVAL_TRACK } from './oval.js';
 export { FIGURE8_TRACK } from './figure8.js';
@@ -14,6 +16,8 @@ export { TOY_BOX_TRACK } from './toyBox.js';
 export { DESK_CABLE_TRACK } from './deskCable.js';
 export { KITCHEN_TILE_TRACK } from './kitchenTile.js';
 export { BATHMAT_TRACK } from './bathmat.js';
+export { SOFA_CANYON_TRACK } from './sofaCanyon.js';
+export { LAUNDRY_BASKET_TRACK } from './laundryBasket.js';
 export { buildTrack, type TrackSpec, type Pt } from './build.js';
 
 /** All authored tracks, keyed by id. */
@@ -25,6 +29,8 @@ export const TRACKS: Record<string, Track> = {
   [DESK_CABLE_TRACK.id]: DESK_CABLE_TRACK,
   [KITCHEN_TILE_TRACK.id]: KITCHEN_TILE_TRACK,
   [BATHMAT_TRACK.id]: BATHMAT_TRACK,
+  [SOFA_CANYON_TRACK.id]: SOFA_CANYON_TRACK,
+  [LAUNDRY_BASKET_TRACK.id]: LAUNDRY_BASKET_TRACK,
 };
 
 /** Lightweight track listing for menus. */

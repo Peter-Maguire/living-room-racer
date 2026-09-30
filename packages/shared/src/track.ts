@@ -54,6 +54,16 @@ export const recoveryPointSchema = z.object({
   rotation: quatSchema,
   /** The checkpoint index this recovery point sits at or just after. */
   checkpointIndex: z.number().int().nonnegative(),
+  /**
+   * Road roll in radians. Positive raises the left-normal edge (-tz, tx); the
+   * road leans into the turn when the sign matches the curvature.
+   */
+  bank: z.number().default(0),
+  /**
+   * Minimum speed (m/s) needed to stay on a steep wall here; below it the car
+   * slides off and is recovered. 0 = not a wall.
+   */
+  minSpeed: z.number().default(0),
 });
 
 export const trackSchema = z.object({
@@ -177,4 +187,126 @@ export function surfaceAt(track: Track, pos: { x: number; z: number }): SurfaceT
     }
   }
   return surfaceAtT(track, bestT);
+}
+
+// --- relief: height, banking, slope ---------------------------------------
+
+/** Road state under a car, from the nearest piece of racing line. */
+export interface TrackSample {
+  /** Lap fraction of the nearest racing-line sample (for surface lookups). */
+  t: number;
+  /** Road surface height at the car's position (includes banking). */
+  y: number;
+  /** Road roll at this point, radians (see recoverySpline.bank). */
+  bank: number;
+  /** Rise per metre along the direction of travel. */
+  slope: number;
+  /** Unit tangent of the racing line (XZ). */
+  tx: number;
+  tz: number;
+  /** Signed distance from the racing line along the left normal (-tz, tx). */
+  offset: number;
+  /** Minimum speed to stay on the wall here (0 = none). */
+  minSpeed: number;
+}
+
+const reliefCache = new WeakMap<Track, boolean>();
+
+/** True if the track has any height, banking or wall sections (cached). */
+export function hasRelief(track: Track): boolean {
+  let v = reliefCache.get(track);
+  if (v === undefined) {
+    v = track.recoverySpline.some(
+      (p) => p.position.y !== 0 || p.bank !== 0 || p.minSpeed !== 0,
+    );
+    reliefCache.set(track, v);
+  }
+  return v;
+}
+
+/**
+ * Sample the road under a world position. Finds the nearest racing-line sample,
+ * projects onto the closer of its two adjoining segments, and interpolates
+ * height and bank. Pure and deterministic; used inside the shared sim and by
+ * the client to tilt cars to the road.
+ */
+export function trackSampleAt(track: Track, pos: { x: number; z: number }): TrackSample {
+  const sp = track.recoverySpline;
+  const n = sp.length;
+  let bi = 0;
+  let bd = Infinity;
+  for (let i = 0; i < n; i++) {
+    const d = distSqXZ(pos, sp[i]!.position);
+    if (d < bd) {
+      bd = d;
+      bi = i;
+    }
+  }
+
+  const project = (ai: number, bj: number) => {
+    const a = sp[ai]!;
+    const b = sp[bj]!;
+    const dx = b.position.x - a.position.x;
+    const dz = b.position.z - a.position.z;
+    const len2 = dx * dx + dz * dz || 1e-9;
+    const u = Math.max(
+      0,
+      Math.min(1, ((pos.x - a.position.x) * dx + (pos.z - a.position.z) * dz) / len2),
+    );
+    const px = a.position.x + dx * u;
+    const pz = a.position.z + dz * u;
+    return { a, b, u, dx, dz, len: Math.sqrt(len2), px, pz, d: distSqXZ(pos, { x: px, z: pz }) };
+  };
+  const before = project((bi - 1 + n) % n, bi);
+  const after = project(bi, (bi + 1) % n);
+  const s = after.d <= before.d ? after : before;
+
+  const tx = s.dx / s.len;
+  const tz = s.dz / s.len;
+  const y = s.a.position.y + (s.b.position.y - s.a.position.y) * s.u;
+  const bank = s.a.bank + (s.b.bank - s.a.bank) * s.u;
+  const hw = track.trackHalfWidth ?? 4;
+  const rawOffset = (pos.x - s.px) * -tz + (pos.z - s.pz) * tx;
+  const offset = Math.max(-hw, Math.min(hw, rawOffset));
+  return {
+    t: sp[bi]!.t,
+    y: y + offset * Math.tan(bank),
+    bank,
+    slope: (s.b.position.y - s.a.position.y) / s.len,
+    tx,
+    tz,
+    offset,
+    minSpeed: sp[bi]!.minSpeed,
+  };
+}
+
+/**
+ * How a car at pos with the given heading should be tilted to lie on the road:
+ * pitch (nose up positive) and roll (right side up positive), radians.
+ */
+export function roadTilt(
+  track: Track,
+  pos: { x: number; z: number },
+  heading: number,
+): { pitch: number; roll: number } {
+  if (!hasRelief(track)) return { pitch: 0, roll: 0 };
+  // Gradient of the same height function the sim uses for car.y, by central
+  // differences, so a car always lies on the surface it is being simulated on.
+  const e = 0.4;
+  const gx =
+    (trackSampleAt(track, { x: pos.x + e, z: pos.z }).y -
+      trackSampleAt(track, { x: pos.x - e, z: pos.z }).y) /
+    (2 * e);
+  const gz =
+    (trackSampleAt(track, { x: pos.x, z: pos.z + e }).y -
+      trackSampleAt(track, { x: pos.x, z: pos.z - e }).y) /
+    (2 * e);
+  const fx = Math.sin(heading);
+  const fz = Math.cos(heading);
+  const rx = Math.cos(heading);
+  const rz = -Math.sin(heading);
+  // Euler order is yaw, then pitch, then roll (three.js 'YXZ'), so the roll
+  // tilts the already-pitched car: tan(roll) = cross slope * cos(pitch).
+  const pitch = Math.atan(gx * fx + gz * fz);
+  return { pitch, roll: Math.atan((gx * rx + gz * rz) * Math.cos(pitch)) };
 }
