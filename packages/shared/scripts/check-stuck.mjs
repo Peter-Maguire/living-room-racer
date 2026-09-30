@@ -22,7 +22,7 @@ for (const track of Object.values(TRACKS)) {
       position: { x: p.position.x - Math.cos(h0) * off, y: p.position.y, z: p.position.z + Math.sin(h0) * off }, heading: h0,
       velocity: { x: 0, y: 0, z: 0 }, speed: 0,
       lastCheckpoint: p.checkpointIndex, lap: 0, place: 0,
-      offTrackTicks: 0, recoveryTimer: 0, lockoutTimer: 0, heldItem: null, boostTimer: 0,
+      offTrackTicks: 0, recoveryTimer: 0, lockoutTimer: 0, heldItem: null, boostTimer: 0, effects: [],
     };
     const world = { tick: 0, cars: new Map([['c', car]]), pickupCooldownUntil: new Map() };
     let recoveries = 0, prev = 'racing';
@@ -60,7 +60,7 @@ for (const track of Object.values(TRACKS)) {
       position: { ...p.position }, heading: headingFromQuatY(p.rotation),
       velocity: { x: 0, y: 0, z: 0 }, speed: 0,
       lastCheckpoint: p.checkpointIndex, lap: 0, place: 0,
-      offTrackTicks: 0, recoveryTimer: 0, lockoutTimer: 0, heldItem: null, boostTimer: 0,
+      offTrackTicks: 0, recoveryTimer: 0, lockoutTimer: 0, heldItem: null, boostTimer: 0, effects: [],
     };
     const world = { tick: 0, cars: new Map([['c', car]]), pickupCooldownUntil: new Map() };
     let idx = i, recoveries = 0, prev = 'racing';

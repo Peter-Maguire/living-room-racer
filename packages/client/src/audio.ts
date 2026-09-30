@@ -15,7 +15,7 @@
  * click/keypress (the lobby "ready" button is a good spot).
  */
 
-import type { SurfaceType } from '@racer/shared';
+import type { HazardType, ItemType, SurfaceType } from '@racer/shared';
 
 const VOLUME_KEY = 'racer.audio.volume';
 const MUTED_KEY = 'racer.audio.muted';
@@ -60,6 +60,8 @@ export class AudioEngine {
   private remoteVoices = new Map<string, RemoteVoice>();
   private tyre: { gain: GainNode; filter: BiquadFilterNode } | null = null;
   private lastRemoteUpdate = 0;
+  /** Loudness multiplier for the one-shot being played (quieter for other players). */
+  private oneShot = 1;
 
   private volume = readNumber(VOLUME_KEY, 0.8);
   private muted = readFlag(MUTED_KEY);
@@ -377,6 +379,64 @@ export class AudioEngine {
     this.noiseBurst(t, 'lowpass', 700, 0.12, 0.25);
   }
 
+  /** Someone used an item. `volume` is lower for other players' items. */
+  itemUse(item: ItemType, volume = 1): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    this.oneShot = volume;
+    const t = ctx.currentTime;
+    switch (item) {
+      case 'shock':
+        this.noiseBurst(t, 'highpass', 4000, 0.25, 0.3);
+        this.tone(t, 1600, 300, 0.25, 'square', 0.12);
+        break;
+      case 'dust':
+        this.noiseBurst(t, 'lowpass', 900, 0.5, 0.25);
+        break;
+      case 'oil':
+        this.noiseBurst(t, 'lowpass', 600, 0.14, 0.3);
+        this.thump(t, 140, 0.25, 0.12);
+        break;
+      case 'tape':
+        this.noiseBurst(t, 'bandpass', 2400, 0.22, 0.3);
+        break;
+      case 'marble':
+        this.tone(t, 900, 1500, 0.12, 'sine', 0.14);
+        this.noiseBurst(t, 'bandpass', 3000, 0.08, 0.2);
+        break;
+      case 'boost':
+        break; // has its own cue (boost())
+    }
+    this.oneShot = 1;
+  }
+
+  /** Something hit a car. */
+  hit(cause: HazardType | 'shock', volume = 1): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    this.oneShot = volume;
+    const t = ctx.currentTime;
+    switch (cause) {
+      case 'shock':
+        this.tone(t, 700, 70, 0.4, 'sawtooth', 0.18);
+        this.noiseBurst(t, 'highpass', 3000, 0.3, 0.3);
+        break;
+      case 'oil':
+        this.noiseBurst(t, 'bandpass', 900, 0.5, 0.3); // tyres skating
+        break;
+      case 'tape':
+        this.thump(t, 110, 0.4, 0.18);
+        this.noiseBurst(t, 'lowpass', 500, 0.3, 0.25);
+        break;
+      case 'marble':
+        this.thump(t, 190, 0.35, 0.1);
+        this.noiseBurst(t, 'bandpass', 2200, 0.1, 0.3);
+        this.whirr(t + 0.05, 0.9); // the spin-out
+        break;
+    }
+    this.oneShot = 1;
+  }
+
   boost(): void {
     this.blip(220, 660, 0.35, 'square');
   }
@@ -421,7 +481,7 @@ export class AudioEngine {
     osc.type = type;
     osc.frequency.setValueAtTime(fromHz, t);
     if (toHz !== fromHz) osc.frequency.exponentialRampToValueAtTime(toHz, t + dur);
-    gain.gain.setValueAtTime(peak, t);
+    gain.gain.setValueAtTime(peak * this.oneShot, t);
     gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
     osc.connect(gain).connect(this.sfxBus);
     osc.start(t);
@@ -435,7 +495,7 @@ export class AudioEngine {
     const gain = this.ctx.createGain();
     osc.frequency.setValueAtTime(hz * 1.6, t);
     osc.frequency.exponentialRampToValueAtTime(hz * 0.6, t + dur);
-    gain.gain.setValueAtTime(peak, t);
+    gain.gain.setValueAtTime(peak * this.oneShot, t);
     gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
     osc.connect(gain).connect(this.sfxBus);
     osc.start(t);
@@ -456,7 +516,7 @@ export class AudioEngine {
     filter.type = type;
     filter.frequency.value = freq;
     const gain = this.ctx.createGain();
-    gain.gain.setValueAtTime(peak, t);
+    gain.gain.setValueAtTime(peak * this.oneShot, t);
     gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
     src.connect(filter).connect(gain).connect(this.sfxBus);
     src.start(t, Math.random() * 0.5);

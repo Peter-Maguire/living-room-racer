@@ -32,6 +32,7 @@ const match = new Match(
   (snap: Snapshot) => io.to('match').emit(SocketEvents.Snapshot, snap),
   (lobby: LobbyState) => io.to('match').emit(SocketEvents.LobbyState, lobby),
   (result: RaceFinished) => io.to('match').emit(SocketEvents.RaceFinished, result),
+  { forceItem: config.forceItem },
 );
 
 io.on('connection', (socket) => {

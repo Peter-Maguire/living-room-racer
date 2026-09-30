@@ -13,7 +13,7 @@ function run(surface) {
   const track = trackFor(surface);
   const sp = track.spawnGrid[0];
   const heading = 2 * Math.atan2(sp.rotation.y, sp.rotation.w);
-  const car = { playerId: 'c', phase: 'racing', position: { ...sp.position }, heading, velocity: { x: 0, y: 0, z: 0 }, speed: 0, lastCheckpoint: -1, lap: 0, place: 0, offTrackTicks: 0, recoveryTimer: 0, lockoutTimer: 0, heldItem: null, boostTimer: 0 };
+  const car = { playerId: 'c', phase: 'racing', position: { ...sp.position }, heading, velocity: { x: 0, y: 0, z: 0 }, speed: 0, lastCheckpoint: -1, lap: 0, place: 0, offTrackTicks: 0, recoveryTimer: 0, lockoutTimer: 0, heldItem: null, boostTimer: 0, effects: [] };
   const world = { tick: 0, cars: new Map([['c', car]]), pickupCooldownUntil: new Map() };
   const step = (steer) => stepWorld(world, new Map([['c', { seq: world.tick, throttle: 1, steer, brake: 0, drift: false, useItem: false }]]), track, FIXED_DT);
   for (let i = 0; i < 40; i++) step(0);

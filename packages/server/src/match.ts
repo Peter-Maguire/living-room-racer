@@ -1,5 +1,9 @@
 import {
   FIXED_DT,
+  createSimCar,
+  rankCars,
+  type GameEvent,
+  type ItemType,
   MAX_PLAYERS,
   SIM_TICK_RATE,
   TRACK_LIST,
@@ -46,6 +50,12 @@ export class Match {
     tick: 0,
     cars: new Map(),
     pickupCooldownUntil: new Map(),
+    // The server is the authority for items: it rolls them and applies every
+    // hit. (Clients run the same step without this, so they never predict them.)
+    authority: { rng: Math.random },
+    hazards: [],
+    events: [],
+    nextHazardId: 1,
   };
   private players = new Map<string, Player>();
   private latestInput = new Map<string, PlayerInput>();
@@ -63,7 +73,11 @@ export class Match {
     private readonly emitSnapshot: (snap: Snapshot) => void,
     private readonly emitLobby: (lobby: LobbyState) => void,
     private readonly emitFinished: (result: RaceFinished) => void,
-  ) {}
+    options: { forceItem?: ItemType | null; rng?: () => number } = {},
+  ) {
+    if (options.rng) this.world.authority!.rng = options.rng;
+    this.world.authority!.forceItem = options.forceItem ?? null;
+  }
 
   addPlayer(playerId: string, displayName: string, carSkin: string): void {
     const slot = this.claimFreeSlot();
@@ -77,23 +91,11 @@ export class Match {
       ready: false,
       lapTicks: [],
     });
-    this.world.cars.set(playerId, {
+    // Faces along the track using the spawn's authored rotation.
+    this.world.cars.set(
       playerId,
-      phase: this.phase === 'racing' ? 'racing' : 'countdown',
-      position: spawn ? { ...spawn.position } : { x: 0, y: 0, z: 0 },
-      // Face along the track using the spawn's authored rotation.
-      heading: spawn ? headingFromQuatY(spawn.rotation) : 0,
-      velocity: { x: 0, y: 0, z: 0 },
-      speed: 0,
-      lastCheckpoint: -1,
-      lap: 0,
-      place: 0,
-      offTrackTicks: 0,
-      recoveryTimer: 0,
-      lockoutTimer: 0,
-      heldItem: null,
-      boostTimer: 0,
-    });
+      createSimCar(playerId, spawn, this.phase === 'racing' ? 'racing' : 'countdown'),
+    );
     this.ackedInputSeq.set(playerId, 0);
     this.broadcastLobby();
   }
@@ -134,6 +136,7 @@ export class Match {
     const next = getTrack(trackId);
     if (next.id === this.track.id) return;
     this.track = next;
+    this.clearHazards();
     // Re-seat every car on the new track's grid and reset progress. Seating is
     // by the player's stable slot, so grid order (and colour) stays consistent.
     this.world.pickupCooldownUntil.clear();
@@ -170,6 +173,7 @@ export class Match {
     this.finished.clear();
     this.latestInput.clear();
     this.world.pickupCooldownUntil.clear();
+    this.clearHazards();
     for (const p of this.players.values()) {
       p.ready = false;
       p.lapTicks = [];
@@ -195,6 +199,13 @@ export class Match {
     car.lockoutTimer = 0;
     car.heldItem = null;
     car.boostTimer = 0;
+    car.effects = [];
+  }
+
+  /** Clear oil, tape, marbles and pending events (new race, track change, rematch). */
+  private clearHazards(): void {
+    this.world.hazards = [];
+    this.world.events = [];
   }
 
   /** Buffer the newest input for a player; the sim consumes it each tick. */
@@ -237,6 +248,7 @@ export class Match {
     this.phase = 'racing';
     this.countdownEndsAtTick = null;
     this.raceStartTick = this.world.tick;
+    this.clearHazards();
     for (const car of this.world.cars.values()) car.phase = 'racing';
   }
 
@@ -360,6 +372,10 @@ export class Match {
   }
 
   private snapshot(): Snapshot {
+    const ranks = rankCars(this.world, this.track);
+    // Events belong to exactly one snapshot: hand them over and start afresh.
+    const events: GameEvent[] = this.world.events ?? [];
+    this.world.events = [];
     return {
       tick: this.world.tick,
       racePhase: this.phase,
@@ -376,7 +392,20 @@ export class Match {
         place: c.place,
         heldItem: c.heldItem,
         boosting: c.boostTimer > 0,
+        // Two decimals is plenty for a countdown and keeps snapshots small.
+        effects: c.effects.map((e) => ({ type: e.type, remaining: Math.round(e.remaining * 100) / 100 })),
+        lockout: Math.max(0, Math.round(c.lockoutTimer * 100) / 100),
+        rank: ranks.get(c.playerId),
       })),
+      hazards: (this.world.hazards ?? []).map((h) => ({
+        id: h.id,
+        type: h.type,
+        x: Math.round(h.x * 100) / 100,
+        z: Math.round(h.z * 100) / 100,
+        vx: h.vx,
+        vz: h.vz,
+      })),
+      events,
       pickups: this.track.pickups.map((_, index) => ({
         index,
         active: this.world.tick >= (this.world.pickupCooldownUntil.get(index) ?? 0),

@@ -390,7 +390,7 @@ Post-MVP polish and content. None of these are required for a playable race — 
 | 15.3 UI | Done except the chromatic-shift/edge-blur polish. |
 | 15.4 Noises | Done (procedural). Sampled sfx via howler.js not started (no assets). |
 | 15.5 Soundtrack | Done (procedural, stem-based). |
-| 15.6 Power-ups | Not started. |
+| 15.6 Power-ups | Mostly done: server-side weighted item rolls (by race position), per-car effects list, world entities (hazards) and one-shot events in the snapshot. Items: Boost, Static Shock, Dust Cloud, Oil Slick, Sticky Tape, Marble. `pnpm --filter @racer/shared validate` covers the rules; `pnpm --filter @racer/client e2e:items` runs every item end to end over the real server and sockets. `FORCE_ITEM=<item>` on the server makes every pad give that item, and `node packages/client/scripts/run-bots.mjs` adds scripted opponents. Not done: Feather (needs Y motion), Magnet, Mini Mode, Homing Bee. |
 | 15.7 Real graphics | Shadows and track-fitted camera done; asset pipeline and art not started. |
 
 ### 15.1 Unique car colours, consistent across all players

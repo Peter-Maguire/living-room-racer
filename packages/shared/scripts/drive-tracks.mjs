@@ -16,7 +16,7 @@ for (const track of Object.values(TRACKS)) {
     playerId: 'bot', phase: 'racing',
     position: { ...spawn.position }, heading: headingFromQuatY(spawn.rotation),
     velocity: { x: 0, y: 0, z: 0 }, speed: 0, lastCheckpoint: -1, lap: 0, place: 0,
-    offTrackTicks: 0, recoveryTimer: 0, lockoutTimer: 0, heldItem: null, boostTimer: 0,
+    offTrackTicks: 0, recoveryTimer: 0, lockoutTimer: 0, heldItem: null, boostTimer: 0, effects: [],
   };
   const world = { tick: 0, cars: new Map([['bot', car]]), pickupCooldownUntil: new Map() };
   const line = track.recoverySpline.map((s) => s.position);

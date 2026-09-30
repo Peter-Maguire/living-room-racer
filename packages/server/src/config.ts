@@ -6,6 +6,8 @@
  * (see the wrapper's game-server-args config). CLI takes precedence over env.
  */
 
+import type { ItemType } from '@racer/shared';
+
 export interface ServerConfig {
   /** Port the game server listens on for socket.io connections. */
   port: number;
@@ -13,6 +15,8 @@ export interface ServerConfig {
   useGameLift: boolean;
   /** Allowed CORS origin for the client (e.g. the CloudFront domain). */
   clientOrigin: string;
+  /** Debug: every pickup pad gives this item (FORCE_ITEM=oil). Null = normal random rolls. */
+  forceItem: ItemType | null;
 }
 
 /** Parse `--port 1234` or `--port=1234` from argv, if present. */
@@ -37,5 +41,16 @@ export function loadConfig(): ServerConfig {
     port: argvPort ?? Number(process.env.PORT ?? 3001),
     useGameLift: (process.env.USE_GAMELIFT ?? 'false') === 'true',
     clientOrigin: process.env.CLIENT_ORIGIN ?? '*',
+    forceItem: parseForcedItem(process.env.FORCE_ITEM),
   };
+}
+
+const ITEMS: readonly string[] = ['boost', 'shock', 'dust', 'oil', 'tape', 'marble'];
+
+/** FORCE_ITEM=oil etc. Unknown values are ignored (with a warning) rather than crashing. */
+function parseForcedItem(raw: string | undefined): ItemType | null {
+  if (!raw) return null;
+  if (ITEMS.includes(raw)) return raw as ItemType;
+  console.warn('[server] ignoring unknown FORCE_ITEM "' + raw + '" (expected one of ' + ITEMS.join(', ') + ')');
+  return null;
 }

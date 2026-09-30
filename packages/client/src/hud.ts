@@ -1,4 +1,23 @@
-import { RACE_LAPS, type Snapshot } from '@racer/shared';
+import { RACE_LAPS, type EffectType, type ItemType, type Snapshot } from '@racer/shared';
+
+/** How each item is shown in the item slot. */
+export const ITEM_INFO: Record<ItemType, { icon: string; name: string }> = {
+  boost: { icon: '🚀', name: 'Boost' },
+  shock: { icon: '⚡', name: 'Static Shock' },
+  dust: { icon: '🌫️', name: 'Dust Cloud' },
+  oil: { icon: '🛢️', name: 'Oil Slick' },
+  tape: { icon: '🩹', name: 'Sticky Tape' },
+  marble: { icon: '🔮', name: 'Marble' },
+};
+
+/** Status pill text and the toast shown when an effect first lands. */
+const EFFECT_INFO: Record<EffectType, { label: string; toast: string }> = {
+  spin: { label: 'SPUN OUT', toast: 'Spun out!' },
+  slick: { label: 'SLIPPERY', toast: 'Oil slick!' },
+  tape: { label: 'STUCK', toast: 'Stuck on tape!' },
+  scramble: { label: 'SCRAMBLED', toast: 'Zapped! Steering reversed' },
+  dust: { label: 'DUSTY', toast: 'Dust cloud!' },
+};
 
 /**
  * In-race HUD. Replaces the original single-line text readout with discrete
@@ -20,6 +39,9 @@ export class Hud {
   /** Notified of moments the soundtrack reacts to (stingers). */
   onEvent: ((e: 'overtake' | 'finalLap') => void) | null = null;
   private splitEl: HTMLDivElement;
+  private effectsEl: HTMLDivElement;
+  private dustEl: HTMLDivElement;
+  private prevEffects = new Set<string>();
   private vignetteEl: HTMLDivElement;
 
   /** Lap timing, derived from lap transitions in the authoritative snapshots. */
@@ -52,6 +74,7 @@ export class Hud {
             <div class="hud-stat hud-clock"><span class="hud-label">TIME</span><span class="hud-value">0.0</span></div>
           </div>
           <div class="hud-item">Item: —</div>
+          <div class="hud-effects"></div>
           <div class="hud-speed"><span class="hud-speed-val">0</span> <span class="hud-speed-unit">km/h</span></div>
           <div class="hud-status"></div>
         </div>
@@ -64,6 +87,10 @@ export class Hud {
     this.itemEl = container.querySelector('.hud-item')!;
     this.statusEl = container.querySelector('.hud-status')!;
     this.speedEl = container.querySelector('.hud-speed-val')!;
+    this.effectsEl = container.querySelector('.hud-effects')!;
+    this.dustEl = document.createElement('div');
+    this.dustEl.className = 'hud-dust';
+    container.appendChild(this.dustEl);
     this.toastsEl = document.createElement('div');
     this.toastsEl.className = 'hud-toasts';
     container.appendChild(this.toastsEl);
@@ -149,8 +176,9 @@ export class Hud {
     this.itemEl.textContent = me.boosting
       ? 'BOOSTING!'
       : me.heldItem
-        ? `${me.heldItem.toUpperCase()} — press Shift`
+        ? `${ITEM_INFO[me.heldItem].icon} ${ITEM_INFO[me.heldItem].name} — press Shift`
         : 'Item: —';
+    this.updateEffects(me.effects ?? []);
     this.itemEl.classList.toggle('is-armed', !me.boosting && me.heldItem != null);
     this.itemEl.classList.toggle('is-active', me.boosting);
 
@@ -202,6 +230,22 @@ export class Hud {
     this.prevLapIdx = lapIdx;
   }
 
+  /** Status pills for active effects, a toast when one lands, and the dust haze. */
+  private updateEffects(effects: { type: EffectType; remaining: number }[]): void {
+    const now = new Set<string>();
+    this.effectsEl.innerHTML = effects
+      .map((e) => `<span class="hud-pill is-${e.type}">${EFFECT_INFO[e.type].label} ${e.remaining.toFixed(1)}</span>`)
+      .join('');
+    for (const e of effects) {
+      now.add(e.type);
+      if (!this.prevEffects.has(e.type)) this.toast(EFFECT_INFO[e.type].toast, 'warn');
+    }
+    this.prevEffects = now;
+    // The haze fades out over the last second rather than vanishing.
+    const dust = effects.find((e) => e.type === 'dust');
+    this.dustEl.style.opacity = dust ? String(Math.min(1, dust.remaining / 1)) : '0';
+  }
+
   /** Show a transient message that fades itself out. */
   private toast(text: string, kind: 'good' | 'warn' | 'final'): void {
     const el = document.createElement('div');
@@ -217,6 +261,9 @@ export class Hud {
     const style = document.createElement('style');
     style.textContent = `
       .hud-root { pointer-events: none; }
+      /* The HUD sits above the dust haze so your own timers stay readable. */
+      .hud-panel, .hud-toasts, .hud-split { position: relative; z-index: 2; }
+      .hud-toasts, .hud-split { position: fixed; }
       .hud-panel {
         display: flex; align-items: stretch; gap: 10px;
         background: rgba(10, 12, 18, 0.55);
@@ -273,6 +320,18 @@ export class Hud {
       .hud-vignette.is-boost {
         background: radial-gradient(ellipse at center, transparent 45%, rgba(51,204,255,0.4) 100%);
       }
+      .hud-effects { display: flex; flex-wrap: wrap; gap: 4px; min-height: 0; }
+      .hud-pill {
+        font-size: 11px; font-weight: 800; letter-spacing: 0.06em; font-variant-numeric: tabular-nums;
+        padding: 2px 7px; border-radius: 999px; background: rgba(255,154,94,0.22); color: #ffb98a;
+      }
+      .hud-pill.is-scramble { background: rgba(255,221,51,0.22); color: #ffe066; }
+      .hud-pill.is-dust { background: rgba(190,160,110,0.28); color: #e3cfa4; }
+      .hud-dust {
+        position: fixed; inset: 0; opacity: 0; transition: opacity 250ms; z-index: 1;
+        background: radial-gradient(ellipse at center, rgba(175,145,100,0.35) 0%, rgba(165,135,92,0.85) 100%);
+        backdrop-filter: blur(3px);
+      }
       .hud-toasts {
         position: fixed; top: 18%; left: 50%; transform: translateX(-50%);
         display: flex; flex-direction: column; align-items: center; gap: 6px;
@@ -307,6 +366,10 @@ export class Hud {
 
 /** Rough live position: rank by lap then last checkpoint cleared. */
 export function positionOf(snap: Snapshot, playerId: string): number {
+  // The server ranks by exact distance along the track; fall back to a coarse
+  // estimate only for snapshots that do not carry it.
+  const serverRank = snap.cars.find((c) => c.playerId === playerId)?.rank;
+  if (serverRank) return serverRank;
   const ranked = [...snap.cars].sort(
     (a, b) => b.lap - a.lap || b.lastCheckpoint - a.lastCheckpoint,
   );

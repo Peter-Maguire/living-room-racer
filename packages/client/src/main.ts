@@ -9,6 +9,7 @@ import {
   getTrack,
   headingToQuatY,
   randomRacerName,
+  type GameEvent,
   type RaceFinished,
   type RacePhase,
   type Snapshot,
@@ -96,7 +97,26 @@ function main(): void {
 
   let predictorId: string | undefined;
 
+  /** When the latest snapshot arrived, to extrapolate fast hazards between snapshots. */
+  let lastSnapAt = 0;
+
+  /** Sound for item uses and hits: full volume for yours, quieter if nearby, silent if far. */
+  function handleEvent(ev: GameEvent): void {
+    const me = net.getPlayerId();
+    const at = predictor?.getCar()?.position;
+    const near = at ? Math.hypot(ev.x - at.x, ev.z - at.z) < 20 : false;
+    if (ev.kind === 'use') {
+      const mine = ev.by === me;
+      if (ev.item !== 'boost' && (mine || near)) audio.itemUse(ev.item, mine ? 1 : 0.45);
+    } else {
+      const mine = ev.target === me;
+      if (mine || near) audio.hit(ev.cause, mine ? 1 : 0.45);
+    }
+  }
+
   net.onSnapshot((snap: Snapshot) => {
+    lastSnapAt = performance.now();
+    for (const ev of snap.events ?? []) handleEvent(ev);
     const playerId = net.getPlayerId();
     // (Re)create the predictor whenever our socket id is known or changes
     // (e.g. after a reconnect, where socket.io assigns a new id). Without this,
@@ -243,6 +263,7 @@ function main(): void {
         phase: local.phase,
         isLocal: true,
         boosting: me?.boosting ?? false,
+        effects: me?.effects?.map((e) => e.type),
         color: colorHexFor(local.playerId),
         ...roadTilt(track, local.position, local.heading),
       });
@@ -257,13 +278,17 @@ function main(): void {
         phase: c.phase,
         isLocal: false,
         boosting: c.boosting,
+        effects: c.effects?.map((e) => e.type),
         color: colorHexFor(c.playerId),
         ...roadTilt(track, c.position, 2 * Math.atan2(c.rotation.y, c.rotation.w)),
       });
     }
 
     renderer.setCars(cars);
-    if (snap) renderer.setPickups(snap.pickups.map((p) => p.active), now);
+    if (snap) {
+      renderer.setPickups(snap.pickups.map((p) => p.active), now);
+      renderer.setHazards(snap.hazards ?? [], lastSnapAt, now);
+    }
     renderer.render();
 
     // Audio: engine tone from local speed; one-shot sfx on item transitions.

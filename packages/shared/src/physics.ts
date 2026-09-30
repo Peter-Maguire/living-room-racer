@@ -10,7 +10,13 @@ import {
   BANK_STEER_BONUS,
   BANK_TRACTION_BONUS,
   CAR_OVERSPEED_DECEL,
+  SLICK_FOLLOW,
+  SLICK_STEER,
+  SLICK_TRACTION,
   SLOPE_ACCEL,
+  EFFECT_SECONDS,
+  TAPE_TOP_SPEED,
+  TAPE_TRACTION,
   CAR_STEER_RATE,
   FALL_Y_THRESHOLD,
   OFF_TRACK_TICKS_BEFORE_RECOVERY,
@@ -31,7 +37,24 @@ import {
   trackSampleAt,
   type Track,
 } from './track.js';
-import type { CarPhase, ItemType, PlayerInput, Vec3 } from './types.js';
+import {
+  hasEffect,
+  rankCars,
+  rollItem,
+  stepHazards,
+  tickEffects,
+  useAuthoritativeItem,
+  type Hazard,
+} from './items.js';
+import type {
+  ActiveEffect,
+  CarPhase,
+  GameEvent,
+  ItemType,
+  PlayerInput,
+  Quat,
+  Vec3,
+} from './types.js';
 
 /**
  * The shared authoritative step. The SERVER runs this to produce the true world
@@ -65,6 +88,8 @@ export interface SimCar {
   heldItem: ItemType | null;
   /** Seconds of boost remaining (0 = not boosting). */
   boostTimer: number;
+  /** Timed effects from items (spin-out, slick, scramble...). */
+  effects: ActiveEffect[];
 }
 
 export interface SimWorld {
@@ -76,6 +101,46 @@ export interface SimWorld {
    * so all cars agree, and so client prediction can mirror it deterministically.
    */
   pickupCooldownUntil: Map<number, number>;
+  /**
+   * Present only when running as the server. Its presence switches on everything
+   * that must not be predicted by a client: rolling items, using non-boost
+   * items, hazards and hits. `rng` is the only source of randomness in the sim.
+   */
+  authority?: {
+    rng: () => number;
+    /** Debug: always roll this item (FORCE_ITEM on the server). */
+    forceItem?: ItemType | null;
+  };
+  /** Oil, tape and marbles on the track (authority only). */
+  hazards?: Hazard[];
+  /** Events raised this tick, drained by the server into the snapshot. */
+  events?: GameEvent[];
+  nextHazardId?: number;
+}
+
+/** A fresh car at a spawn transform, in the given phase. */
+export function createSimCar(
+  playerId: string,
+  spawn: { position: Vec3; rotation: Quat } | undefined,
+  phase: CarPhase = 'countdown',
+): SimCar {
+  return {
+    playerId,
+    phase,
+    position: spawn ? { ...spawn.position } : { x: 0, y: 0, z: 0 },
+    heading: spawn ? headingFromQuatY(spawn.rotation) : 0,
+    velocity: { x: 0, y: 0, z: 0 },
+    speed: 0,
+    lastCheckpoint: -1,
+    lap: 0,
+    place: 0,
+    offTrackTicks: 0,
+    recoveryTimer: 0,
+    lockoutTimer: 0,
+    heldItem: null,
+    boostTimer: 0,
+    effects: [],
+  };
 }
 
 /**
@@ -158,6 +223,9 @@ export function stepWorld(
     stepCar(car, inputs.get(car.playerId), track, world, dt);
   }
   resolveCarCollisions(world);
+  if (world.authority) {
+    stepHazards(world, dt, (p) => isOnTrack(track, p));
+  }
   world.tick += 1;
 }
 
@@ -239,9 +307,13 @@ function stepCar(
 
   if (car.phase !== 'racing') return;
 
-  // Control lockout right after a re-drop: physics settles, input ignored.
-  const controllable = car.lockoutTimer <= 0;
+  tickEffects(car, dt);
+  // Control lockout right after a re-drop, or while spun out: input ignored.
+  const spinning = hasEffect(car, 'spin');
+  const controllable = car.lockoutTimer <= 0 && !spinning;
   if (car.lockoutTimer > 0) car.lockoutTimer -= dt;
+  // A spin-out turns the car one full revolution over its duration.
+  if (spinning) car.heading += ((Math.PI * 2) / EFFECT_SECONDS.spin) * dt;
 
   const relief = hasRelief(track);
   // Tracks with neither sections nor relief never pay for the road lookup.
@@ -250,7 +322,7 @@ function stepCar(
   const base = SURFACES[sample ? surfaceAtT(track, sample.t) : track.defaultSurface];
   // Banked roads let you corner harder; uphill bleeds speed, downhill gives it back.
   const bankSin = sample ? Math.abs(Math.sin(sample.bank)) : 0;
-  const surface =
+  const banked =
     bankSin > 0
       ? {
           ...base,
@@ -258,6 +330,30 @@ function stepCar(
           traction: base.traction * (1 + BANK_TRACTION_BONUS * bankSin),
         }
       : base;
+  // Oil makes the road slick; tape drags. Stacks on top of the surface.
+  let surface = banked;
+  if (hasEffect(car, 'slick')) {
+    surface = {
+      ...surface,
+      steer: surface.steer * SLICK_STEER,
+      traction: surface.traction * SLICK_TRACTION,
+      follow: Math.min(surface.follow, SLICK_FOLLOW),
+    };
+  }
+  if (hasEffect(car, 'tape')) {
+    surface = {
+      ...surface,
+      topSpeed: surface.topSpeed * TAPE_TOP_SPEED,
+      traction: surface.traction * TAPE_TRACTION,
+    };
+  }
+  // Static shock scrambles the controls: steering is inverted.
+  const driverInput =
+    controllable && input && hasEffect(car, 'scramble')
+      ? { ...input, steer: -input.steer }
+      : controllable
+        ? input
+        : undefined;
   const slopeDecel = sample
     ? SLOPE_ACCEL *
       sample.slope *
@@ -265,7 +361,7 @@ function stepCar(
     : 0;
 
   updateItems(car, controllable ? input : undefined, track, world, dt);
-  driveCar(car, controllable ? input : undefined, surface, slopeDecel, dt);
+  driveCar(car, driverInput, surface, slopeDecel, dt);
   integrate(car, surface, dt);
   updateCheckpointProgress(car, track);
 
@@ -295,10 +391,13 @@ function updateItems(
   // Decay any active boost.
   if (car.boostTimer > 0) car.boostTimer = Math.max(0, car.boostTimer - dt);
 
-  // Use the held item.
+  // Use the held item. Boost is deterministic, so clients predict it; every
+  // other item changes other cars or the track, so only the server applies it.
   if (input?.useItem && car.heldItem === 'boost') {
     car.heldItem = null;
     car.boostTimer = BOOST_SECONDS;
+  } else if (input?.useItem && car.heldItem && world.authority) {
+    useAuthoritativeItem(car, world, track);
   }
 
   // Collect a pickup pad if driving over an active one and not already holding.
@@ -311,8 +410,15 @@ function updateItems(
       const dx = car.position.x - p.x;
       const dz = car.position.z - p.z;
       if (dx * dx + dz * dz <= r2) {
-        car.heldItem = 'boost';
-        world.pickupCooldownUntil.set(i, world.tick + PICKUP_RESPAWN_TICKS);
+        // Which item you get is the server's call (random, weighted by race
+        // position). A client just waits to see it in the next snapshot.
+        if (world.authority) {
+          const ranks = rankCars(world, track);
+          car.heldItem =
+            world.authority.forceItem ??
+            rollItem(ranks.get(car.playerId) ?? 1, world.cars.size, world.authority.rng);
+          world.pickupCooldownUntil.set(i, world.tick + PICKUP_RESPAWN_TICKS);
+        }
         break;
       }
     }
@@ -460,6 +566,8 @@ export function carStateToSimCar(state: {
   place: number;
   heldItem: ItemType | null;
   boosting: boolean;
+  effects?: ActiveEffect[];
+  lockout?: number;
 }): SimCar {
   const heading = headingFromQuatY(state.rotation);
   // Project velocity onto heading direction to recover signed speed.
@@ -482,7 +590,9 @@ export function carStateToSimCar(state: {
     place: state.place,
     offTrackTicks: 0,
     recoveryTimer: 0,
-    lockoutTimer: 0,
+    // Exact when the server sent it; otherwise assume none left.
+    lockoutTimer: state.lockout ?? 0,
+    effects: (state.effects ?? []).map((e) => ({ ...e })),
     heldItem: state.heldItem,
     // The snapshot only carries a boolean; approximate the remaining time so
     // predicted boost feel is roughly right until the next snapshot corrects it.

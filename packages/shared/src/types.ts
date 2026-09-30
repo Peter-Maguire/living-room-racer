@@ -28,8 +28,38 @@ export interface PlayerInput {
   useItem: boolean;
 }
 
-/** Power-up types a car can hold and use. Extend as more items are added. */
-export type ItemType = 'boost';
+/** Power-up types a car can hold and use. */
+export type ItemType = 'boost' | 'shock' | 'dust' | 'oil' | 'tape' | 'marble';
+
+/** Timed conditions on a car. Applied by the server; they tick down in the shared sim. */
+export type EffectType = 'spin' | 'slick' | 'tape' | 'scramble' | 'dust';
+
+export interface ActiveEffect {
+  type: EffectType;
+  /** Seconds left. */
+  remaining: number;
+}
+
+/** Things that exist on the track independent of any car. */
+export type HazardType = 'oil' | 'tape' | 'marble';
+
+/** A hazard as sent to clients. Velocity lets clients extrapolate a marble between snapshots. */
+export interface HazardState {
+  id: number;
+  type: HazardType;
+  x: number;
+  z: number;
+  vx: number;
+  vz: number;
+}
+
+/**
+ * One-off happenings for sound and visual flourishes. Carried by the snapshot of
+ * the tick they occurred in, so each is delivered exactly once.
+ */
+export type GameEvent =
+  | { kind: 'use'; item: ItemType; by: string; x: number; z: number }
+  | { kind: 'hit'; cause: HazardType | 'shock'; target: string; x: number; z: number };
 
 /** Authoritative state of a single car, sent in snapshots. */
 export interface CarState {
@@ -38,12 +68,12 @@ export interface CarState {
   position: Vec3;
   rotation: Quat;
   linearVelocity: Vec3;
-  /** Index of the last checkpoint passed, in order. */
   /**
    * Signed driven speed along the heading (m/s). Differs from |linearVelocity|
    * on low-grip surfaces, where the car slides. Optional for old snapshots.
    */
   speed?: number;
+  /** Index of the last checkpoint passed, in order. */
   lastCheckpoint: number;
   lap: number;
   /** Finishing place once phase === 'finished' (1-based), else 0. */
@@ -52,6 +82,12 @@ export interface CarState {
   heldItem: ItemType | null;
   /** True while a boost is active (for client VFX). */
   boosting: boolean;
+  /** Active timed effects (spin-out, slick, scramble...). */
+  effects: ActiveEffect[];
+  /** Seconds of control lockout left after a re-drop or spin. Optional for old snapshots. */
+  lockout?: number;
+  /** Live race position (1 = leading), computed by the server. */
+  rank?: number;
 }
 
 /** Authoritative state of a pickup pad, sent in snapshots. */
@@ -74,4 +110,8 @@ export interface Snapshot {
   pickups: PickupState[];
   /** Per-player: the last input seq the server has processed (for reconciliation). */
   ackedInputSeq: Record<string, number>;
+  /** Oil, tape and marbles currently on the track. */
+  hazards: HazardState[];
+  /** One-off events from this tick. */
+  events: GameEvent[];
 }

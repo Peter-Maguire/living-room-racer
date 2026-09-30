@@ -1,5 +1,15 @@
 import * as THREE from 'three';
-import type { CarPhase, Quat, Track, Vec3 } from '@racer/shared';
+import {
+  HAZARDS,
+  hasRelief,
+  trackSampleAt,
+  type CarPhase,
+  type HazardState,
+  type HazardType,
+  type Quat,
+  type Track,
+  type Vec3,
+} from '@racer/shared';
 
 /** A car to draw this frame, from prediction (local) or interpolation (remote). */
 export interface RenderCar {
@@ -13,6 +23,8 @@ export interface RenderCar {
   /** Tilt to lie on ramps and banks: pitch (nose up +) and roll (right side up +), radians. */
   pitch?: number;
   roll?: number;
+  /** Active effect types, for visual flourishes (e.g. a scrambled car flickers). */
+  effects?: string[];
   /**
    * Body colour (packed RGB) from the server-assigned palette index. Every
    * client renders a given player in the same colour, so colours are a reliable
@@ -73,6 +85,10 @@ export class Renderer {
   private carMeshes = new Map<string, THREE.Mesh>();
   private carGeometry = new THREE.BoxGeometry(1, 0.5, 2);
   private pickupMeshes: THREE.Mesh[] = [];
+  /** Oil, tape and marbles, by server id. Geometry and materials are shared per type. */
+  private hazardMeshes = new Map<number, THREE.Mesh>();
+  private hazardAssets = new Map<HazardType, { geom: THREE.BufferGeometry; mat: THREE.Material }>();
+  private track: Track | null = null;
   /** All track geometry (ribbon, finish line, pads) so it can be rebuilt. */
   private trackGroup: THREE.Group | null = null;
   /** Warm key light; also the shadow caster, refitted per track. */
@@ -166,6 +182,8 @@ export class Renderer {
    * track" begins, and it exactly matches the collision test.
    */
   buildTrack(track: Track): void {
+    this.track = track;
+    this.clearHazards();
     // Clear any previously-built track (track switch in the lobby).
     if (this.trackGroup) {
       this.disposeGroup(this.trackGroup);
@@ -417,6 +435,71 @@ export class Renderer {
     });
   }
 
+  private hazardAsset(type: HazardType): { geom: THREE.BufferGeometry; mat: THREE.Material } {
+    let a = this.hazardAssets.get(type);
+    if (a) return a;
+    const r = HAZARDS[type].radius;
+    if (type === 'oil') {
+      // A dark, glossy puddle.
+      a = {
+        geom: new THREE.CylinderGeometry(r, r, 0.05, 28),
+        mat: new THREE.MeshStandardMaterial({ color: 0x14141c, emissive: 0x0a0a22, roughness: 0.08, metalness: 0.85 }),
+      };
+    } else if (type === 'tape') {
+      // A strip of sticky tape, tan with a slight sheen.
+      a = {
+        geom: new THREE.BoxGeometry(r * 2.2, 0.05, r * 1.4),
+        mat: new THREE.MeshStandardMaterial({ color: 0xd9c38a, roughness: 0.35, transparent: true, opacity: 0.92 }),
+      };
+    } else {
+      // A glass marble.
+      a = {
+        geom: new THREE.SphereGeometry(r, 20, 14),
+        mat: new THREE.MeshStandardMaterial({ color: 0x66ccff, emissive: 0x113355, roughness: 0.08, metalness: 0.2 }),
+      };
+    }
+    this.hazardAssets.set(type, a);
+    return a;
+  }
+
+  private clearHazards(): void {
+    for (const m of this.hazardMeshes.values()) this.scene.remove(m);
+    this.hazardMeshes.clear();
+  }
+
+  /**
+   * Draw the server's hazards. Marbles move fast (26 m/s) and snapshots are
+   * discrete, so they are extrapolated along their velocity since the last
+   * snapshot (capped, in case packets stall).
+   */
+  setHazards(hazards: HazardState[], snapshotAt: number, now: number): void {
+    const since = Math.min(0.15, Math.max(0, (now - snapshotAt) / 1000));
+    const seen = new Set<number>();
+    for (const h of hazards) {
+      seen.add(h.id);
+      let mesh = this.hazardMeshes.get(h.id);
+      if (!mesh) {
+        const a = this.hazardAsset(h.type);
+        mesh = new THREE.Mesh(a.geom, a.mat);
+        mesh.castShadow = h.type === 'marble';
+        mesh.receiveShadow = true;
+        this.scene.add(mesh);
+        this.hazardMeshes.set(h.id, mesh);
+      }
+      const x = h.x + h.vx * since;
+      const z = h.z + h.vz * since;
+      const floor = this.track && hasRelief(this.track) ? trackSampleAt(this.track, { x, z }).y : 0;
+      const lift = h.type === 'marble' ? HAZARDS.marble.radius : 0.04;
+      mesh.position.set(x, floor + lift, z);
+      if (h.type === 'marble') mesh.rotation.x = now / 50; // rolling
+    }
+    for (const [id, mesh] of this.hazardMeshes) {
+      if (seen.has(id)) continue;
+      this.scene.remove(mesh);
+      this.hazardMeshes.delete(id);
+    }
+  }
+
   /** Show/hide + spin pickup pads based on active state from the snapshot. */
   setPickups(active: boolean[], now: number): void {
     for (let i = 0; i < this.pickupMeshes.length; i++) {
@@ -466,7 +549,9 @@ export class Renderer {
       // Dim cars that are being recovered; make boosting cars glow.
       mat.opacity = car.phase === 'recovering' ? 0.4 : 1;
       mat.transparent = car.phase === 'recovering';
-      mat.emissive.setHex(car.boosting ? 0x33ccff : 0x000000);
+      // Boost glows cyan; a shocked (scrambled) car flickers yellow.
+      const flicker = car.effects?.includes('scramble') && Math.sin(performance.now() / 55) > 0;
+      mat.emissive.setHex(car.boosting ? 0x33ccff : flicker ? 0xffdd33 : 0x000000);
       const boostScale = car.boosting ? 1.15 : 1;
       mesh.scale.set(boostScale, boostScale, boostScale);
 
