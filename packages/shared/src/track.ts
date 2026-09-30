@@ -132,6 +132,9 @@ function distSqXZ(
   return dx * dx + dz * dz;
 }
 
+/** Steepest bank (radians, ~9°) a recovered car may be re-dropped onto. */
+const SAFE_RESPAWN_BANK = 0.16;
+
 /**
  * Find the recovery point to respawn a car at. We only consider racing-line
  * samples at or behind the car's last cleared checkpoint (so recovery never
@@ -146,7 +149,14 @@ export function findRecoveryPoint(
   const eligible = track.recoverySpline.filter(
     (p) => p.checkpointIndex <= lastCheckpoint,
   );
-  const pool = eligible.length > 0 ? eligible : track.recoverySpline;
+  const behind = eligible.length > 0 ? eligible : track.recoverySpline;
+  // A car is re-dropped stationary, so never drop it somewhere it can't stay:
+  // on a wall (minimum speed) or a steep bank it would be recovered again at
+  // once, forever. Prefer safe ground; only if none exists, use what we have.
+  const safe = behind.filter(
+    (p) => p.minSpeed === 0 && Math.abs(p.bank) <= SAFE_RESPAWN_BANK,
+  );
+  const pool = safe.length > 0 ? safe : behind;
 
   let best = pool[0]!;
   let bestDist = distSqXZ(carPos, best.position);
