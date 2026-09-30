@@ -1,6 +1,7 @@
 import {
   CAR_MAX_SPEED,
   INPUT_SEND_RATE,
+  RACE_LAPS,
   OVAL_TRACK,
   carColor,
   getTrack,
@@ -11,8 +12,9 @@ import {
   type Snapshot,
 } from '@racer/shared';
 import { AudioEngine } from './audio.js';
+import { Music } from './music.js';
 import { loadClientConfig } from './config.js';
-import { Hud } from './hud.js';
+import { Hud, positionOf } from './hud.js';
 import { Minimap } from './minimap.js';
 import { InputSampler } from './input.js';
 import { Interpolator } from './interpolation.js';
@@ -57,7 +59,9 @@ function main(): void {
     () => void beginMatchmaking(), // retry button on the matchmaking screen
   );
 
+  const music = new Music(audio);
   const hudPanel = hud ? new Hud(hud) : null;
+  if (hudPanel) hudPanel.onEvent = (e) => music.stinger(e);
   const minimap = new Minimap(app);
   minimap.setTrack(track);
 
@@ -147,8 +151,11 @@ function main(): void {
   });
 
   function setPhase(next: RacePhase): void {
-    if (next === 'racing' && phase === 'countdown') audio.go();
+    const starting = next === 'racing' && phase === 'countdown';
+    if (starting) audio.go();
     phase = next;
+    music.setTrack(next === 'racing' ? 'race' : next === 'finished' ? 'results' : 'lobby');
+    if (starting) music.stinger('start');
     // The HUD is only meaningful while racing.
     hudPanel?.setVisible(next === 'racing');
     minimap.setVisible(next === 'racing');
@@ -302,12 +309,24 @@ function main(): void {
     if (me) {
       if (me.phase === 'recovering' && prevMePhase !== 'recovering') audio.recoveryStart();
       if (prevMePhase === 'recovering' && me.phase !== 'recovering') audio.recoveryEnd();
+      if (me.phase === 'finished' && prevMePhase !== 'finished') music.stinger('finish');
       prevMePhase = me.phase;
       if (me.boosting && !prevBoosting) audio.boost();
       if (me.heldItem && me.heldItem !== prevHeldItem) audio.pickup();
       prevBoosting = me.boosting;
       prevHeldItem = me.heldItem;
     }
+
+    if (racing && snap && me) {
+      const rank = positionOf(snap, me.playerId);
+      const podium = snap.cars.length > 1 && rank <= 3;
+      music.setIntensity(
+        (me.lap >= 1 ? 1 : 0) + (podium ? 1 : 0) + (me.lap + 1 >= RACE_LAPS ? 1 : 0),
+        me.boosting,
+      );
+    }
+    // Beat-synced UI: CSS reads --beat (1 on the beat, decaying to 0).
+    document.documentElement.style.setProperty('--beat', music.beatPulse().toFixed(3));
 
     if (hudPanel && phase === 'racing' && snap) {
       hudPanel.update(
@@ -333,6 +352,9 @@ function createAudioControls(container: HTMLElement, audio: AudioEngine): void {
   const btn = document.createElement('button');
   btn.style.cssText = 'background:none;border:0;color:inherit;cursor:pointer;font-size:16px;padding:0;';
   btn.setAttribute('aria-label', 'Toggle sound (M)');
+  const musicBtn = document.createElement('button');
+  musicBtn.style.cssText = btn.style.cssText;
+  musicBtn.setAttribute('aria-label', 'Toggle music (N)');
   const slider = document.createElement('input');
   slider.type = 'range';
   slider.min = '0';
@@ -344,6 +366,17 @@ function createAudioControls(container: HTMLElement, audio: AudioEngine): void {
   const paint = () => {
     btn.textContent = audio.isMuted() ? '🔇' : '🔊';
   };
+  const paintMusic = () => {
+    musicBtn.textContent = '♪';
+    musicBtn.style.opacity = audio.isMusicMuted() ? '0.35' : '1';
+    musicBtn.style.textDecoration = audio.isMusicMuted() ? 'line-through' : 'none';
+  };
+  const toggleMusic = () => {
+    audio.resume();
+    audio.setMusicMuted(!audio.isMusicMuted());
+    paintMusic();
+  };
+  musicBtn.addEventListener('click', toggleMusic);
   const toggle = () => {
     audio.resume();
     audio.toggleMute();
@@ -360,9 +393,11 @@ function createAudioControls(container: HTMLElement, audio: AudioEngine): void {
   });
   window.addEventListener('keydown', (e) => {
     if (e.code === 'KeyM' && !e.repeat) toggle();
+    if (e.code === 'KeyN' && !e.repeat) toggleMusic();
   });
   paint();
-  wrap.append(btn, slider);
+  paintMusic();
+  wrap.append(btn, musicBtn, slider);
   container.appendChild(wrap);
 }
 

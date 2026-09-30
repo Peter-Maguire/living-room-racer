@@ -17,6 +17,8 @@
 
 const VOLUME_KEY = 'racer.audio.volume';
 const MUTED_KEY = 'racer.audio.muted';
+const MUSIC_MUTED_KEY = 'racer.audio.musicMuted';
+const MUSIC_LEVEL = 0.45;
 
 export type Surface = 'floor' | 'rug' | 'wood' | 'cushion';
 
@@ -57,6 +59,8 @@ export class AudioEngine {
 
   private volume = readNumber(VOLUME_KEY, 0.8);
   private muted = readFlag(MUTED_KEY);
+  private musicMuted = readFlag(MUSIC_MUTED_KEY);
+  private readyHooks: (() => void)[] = [];
 
   // --- lifecycle ----------------------------------------------------------
 
@@ -73,7 +77,7 @@ export class AudioEngine {
     this.master.connect(ctx.destination);
     this.engineBus = this.bus(0.9);
     this.sfxBus = this.bus(1);
-    this.musicBus = this.bus(0.6);
+    this.musicBus = this.bus(this.musicMuted ? 0 : MUSIC_LEVEL);
     this.applyMaster();
 
     this.noise = makeNoise(ctx);
@@ -91,6 +95,26 @@ export class AudioEngine {
     src.start();
     this.tyre = { gain, filter };
     this.setTyre(0, 'floor');
+    for (const h of this.readyHooks) h();
+  }
+
+  /** Run `cb` once the AudioContext exists (after the first user gesture). */
+  onReady(cb: () => void): void {
+    if (this.ctx) cb();
+    else this.readyHooks.push(cb);
+  }
+
+  isMusicMuted(): boolean {
+    return this.musicMuted;
+  }
+
+  /** Mute just the soundtrack, leaving engines and effects audible. */
+  setMusicMuted(m: boolean): void {
+    this.musicMuted = m;
+    writeStore(MUSIC_MUTED_KEY, m ? '1' : '0');
+    if (this.ctx && this.musicBus) {
+      this.musicBus.gain.setTargetAtTime(m ? 0 : MUSIC_LEVEL, this.ctx.currentTime, 0.05);
+    }
   }
 
   /** Bus for the soundtrack (15.5), so music mixes/mutes independently. */

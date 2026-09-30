@@ -269,7 +269,10 @@ export class Overlay {
         gap: 12px; color: #fff; background: rgba(10, 12, 18, 0.82);
         font-family: system-ui, sans-serif; text-align: center;
       }
-      .overlay h1 { margin: 0; font-size: 32px; }
+      .overlay h1 { margin: 0; font-size: 32px; text-shadow: 0 0 calc(var(--beat, 0) * 18px) rgba(255, 215, 94, 0.6); }
+      /* Beat-synced pulse (--beat is set each frame from the soundtrack). */
+      .countdown { transform: scale(calc(1 + var(--beat, 0) * 0.12)); }
+      .overlay .ready-btn, .overlay .rematch-btn { box-shadow: 0 0 calc(var(--beat, 0) * 16px) rgba(51, 136, 255, 0.8); }
       .overlay h2 { margin: 0; font-weight: 400; opacity: 0.8; }
       .player-list, .results-body { min-width: 340px; display: flex; flex-direction: column; gap: 6px; }
       .player-row, .result-row {
@@ -349,6 +352,8 @@ export class Overlay {
 
       @media (prefers-reduced-motion: reduce) {
         .count-num, .result-row { animation: none; }
+        .countdown { transform: none; }
+        .overlay h1 { text-shadow: none; }
         .overlay button:hover { transform: none; }
       }
     `;

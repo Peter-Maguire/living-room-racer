@@ -17,6 +17,8 @@ export class Hud {
   private accentEl: HTMLDivElement;
   private speedEl: HTMLSpanElement;
   private toastsEl: HTMLDivElement;
+  /** Notified of moments the soundtrack reacts to (stingers). */
+  onEvent: ((e: 'overtake' | 'finalLap') => void) | null = null;
   private splitEl: HTMLDivElement;
   private vignetteEl: HTMLDivElement;
 
@@ -105,7 +107,10 @@ export class Hud {
     const finalLap = lap === RACE_LAPS;
     this.lapEl.parentElement?.classList.toggle('is-final', finalLap);
     if (lap !== this.lastLap) {
-      if (finalLap && this.lastLap !== -1) this.toast('FINAL LAP!', 'final');
+      if (finalLap && this.lastLap !== -1) {
+        this.toast('FINAL LAP!', 'final');
+        this.onEvent?.('finalLap');
+      }
       // Restart the pop animation by removing and re-adding the class.
       this.lapEl.parentElement?.classList.remove('just-changed');
       void this.lapEl.parentElement?.offsetWidth; // force reflow
@@ -117,7 +122,10 @@ export class Hud {
     this.posEl.textContent = `${ordinal(pos)}/${snap.cars.length}`;
     if (this.lastPos !== 0 && pos !== this.lastPos) {
       const gained = pos < this.lastPos;
-      if (gained) this.toast(`Overtake! ${ordinal(pos)} place`, 'good');
+      if (gained) {
+        this.toast(`Overtake! ${ordinal(pos)} place`, 'good');
+        this.onEvent?.('overtake');
+      }
       const el = this.posEl.parentElement;
       el?.classList.remove('gain', 'loss');
       void el?.offsetWidth;
@@ -298,7 +306,7 @@ export class Hud {
 }
 
 /** Rough live position: rank by lap then last checkpoint cleared. */
-function positionOf(snap: Snapshot, playerId: string): number {
+export function positionOf(snap: Snapshot, playerId: string): number {
   const ranked = [...snap.cars].sort(
     (a, b) => b.lap - a.lap || b.lastCheckpoint - a.lastCheckpoint,
   );
