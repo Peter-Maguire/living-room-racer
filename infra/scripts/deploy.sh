@@ -36,9 +36,15 @@ STACK="$(stack_name "$ENV")"
 PARAMS_FILE="${INFRA_DIR}/params/${ENV}.json"
 PACKAGED="${INFRA_DIR}/templates/root.packaged.yaml"
 
-echo "==> Building SAM (Lambda) assets"
-sam build --template "${INFRA_DIR}/templates/api.yaml" >/dev/null 2>&1 || \
-  echo "   (skipping sam build: packages/api not present yet)"
+echo "==> Building Lambda bundles (packages/api -> build/)"
+# The API handlers are bundled with esbuild into self-contained .mjs files.
+# Required because pnpm's symlinked node_modules does not survive the plain
+# directory zip that `aws cloudformation package` performs.
+( cd "${REPO_ROOT}" && pnpm --filter @racer/shared build && pnpm --filter @racer/api build )
+if [[ ! -f "${REPO_ROOT}/packages/api/build/matchmaking.mjs" ]]; then
+  echo "ERROR: Lambda bundle missing; API build failed." >&2
+  exit 1
+fi
 
 echo "==> Packaging nested templates + code to s3://${BUCKET}"
 aws cloudformation package \

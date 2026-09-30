@@ -1,0 +1,22 @@
+# Amazon GameLift Servers game server wrapper config (managed CONTAINER fleet).
+#
+# The wrapper owns the GameLift lifecycle and launches our game server as a
+# child process, substituting the GameLift-assigned container port into the
+# --port argument. Our server parses --port (packages/server/src/config.ts).
+#
+# We point at a small launcher script rather than the node binary directly,
+# because the wrapper resolves executable-file-path relative to its working
+# directory (/local/game).
+log-config:
+  # debug while bringing the fleet up: logs the agent websocket URL and the
+  # process id used for InitSDK, which is what you need to diagnose a 403
+  # "bad handshake" from the GameLift agent.
+  wrapper-log-level: debug
+ports:
+  gamePort: 37016
+game-server-details:
+  executable-file-path: ./start-server.sh
+  game-server-args:
+    - arg: "--port"
+      val: "{{.ContainerPort}}"
+      pos: 0

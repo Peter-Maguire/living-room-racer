@@ -1,18 +1,23 @@
 import {
+  CAR_MAX_SPEED,
   INPUT_SEND_RATE,
   OVAL_TRACK,
-  RACE_LAPS,
+  carColor,
+  getTrack,
   headingToQuatY,
+  randomRacerName,
   type RaceFinished,
   type RacePhase,
   type Snapshot,
 } from '@racer/shared';
+import { AudioEngine } from './audio.js';
 import { loadClientConfig } from './config.js';
+import { Hud } from './hud.js';
 import { InputSampler } from './input.js';
 import { Interpolator } from './interpolation.js';
 import { resolveConnection } from './matchmaking.js';
 import { NetworkClient } from './network.js';
-import { Overlay } from './overlay.js';
+import { Overlay, type PlayerMeta } from './overlay.js';
 import { Predictor } from './prediction.js';
 import { Renderer, type RenderCar } from './renderer.js';
 
@@ -31,21 +36,47 @@ function main(): void {
   const hud = document.getElementById('hud');
   if (!app) throw new Error('#app container missing');
 
-  const track = OVAL_TRACK;
+  // The active track can change in the lobby; it starts as the oval and is
+  // reconciled to whatever the server reports via lobby state.
+  let track = OVAL_TRACK;
   const renderer = new Renderer(app);
   renderer.buildTrack(track);
   const net = new NetworkClient();
   const input = new InputSampler();
   const interpolator = new Interpolator();
+  const audio = new AudioEngine();
   const overlay = new Overlay(
     app,
-    (ready) => net.sendReady(ready),
+    (ready) => {
+      audio.resume(); // First user gesture: unlock audio.
+      net.sendReady(ready);
+    },
     () => net.sendReady(false), // "back to lobby": drop ready, server returns us
+    (trackId) => net.sendSelectTrack(trackId),
+    () => void beginMatchmaking(), // retry button on the matchmaking screen
   );
+
+  const hudPanel = hud ? new Hud(hud) : null;
+
+  /**
+   * Per-player identity from lobby state: display name + server-assigned car
+   * colour index. The server is the only assigner, so every client renders a
+   * given player in the same colour. Snapshots deliberately don't carry colour
+   * (it never changes mid-race), so this map is the render loop's colour source.
+   */
+  const playerMeta = new Map<string, PlayerMeta>();
+  const colorHexFor = (playerId: string): number =>
+    carColor(playerMeta.get(playerId)?.colorIndex ?? 0).hex;
+
+  // Track item/boost state to fire one-shot sfx on transitions.
+  let prevBoosting = false;
+  let prevHeldItem: string | null = null;
 
   // The predictor needs our playerId (socket id), known only after connect.
   let predictor: Predictor | null = null;
   let phase: RacePhase = 'lobby';
+  /** True once the first snapshot arrives, i.e. we're actually in the match. */
+  let joinedMatch = false;
   let lastResult: RaceFinished | null = null;
 
   let predictorId: string | undefined;
@@ -62,11 +93,35 @@ function main(): void {
     }
     predictor?.reconcile(snap);
     interpolator.push(snap);
-    if (snap.racePhase !== phase) setPhase(snap.racePhase);
+    // The first snapshot means we're in the match: leave the matchmaking screen
+    // even if the phase happens to equal our initial value (setPhase only fires
+    // on a *change*, so without this the overlay could stay up forever).
+    if (!joinedMatch) {
+      joinedMatch = true;
+      setPhase(snap.racePhase);
+    } else if (snap.racePhase !== phase) {
+      setPhase(snap.racePhase);
+    }
   });
 
   net.onLobby((lobby) => {
+    // Refresh the colour/name map before anything renders from it. Rebuilt
+    // wholesale so a player who left stops occupying their old colour locally.
+    playerMeta.clear();
+    for (const p of lobby.players) {
+      playerMeta.set(p.playerId, {
+        displayName: p.displayName,
+        colorIndex: p.colorIndex,
+      });
+    }
     overlay.updateLobby(lobby, net.getPlayerId());
+    // Rebuild the rendered track (and force the predictor to re-create with the
+    // new track) when the server's active track changes.
+    if (lobby.activeTrackId !== track.id) {
+      track = getTrack(lobby.activeTrackId);
+      renderer.buildTrack(track);
+      predictorId = undefined; // triggers predictor rebuild on next snapshot
+    }
   });
 
   net.onFinished((result) => {
@@ -75,33 +130,56 @@ function main(): void {
 
   function setPhase(next: RacePhase): void {
     phase = next;
+    // The HUD is only meaningful while racing.
+    hudPanel?.setVisible(next === 'racing');
     if (next === 'racing') {
       overlay.showRace();
     } else if (next === 'finished') {
-      if (lastResult) overlay.showResults(lastResult, net.getPlayerId());
+      if (lastResult) {
+        overlay.showResults(lastResult, net.getPlayerId(), playerMeta);
+      }
     } else {
       // lobby or countdown: lobby overlay (countdown shown within it).
       overlay.showLobby();
     }
   }
 
-  overlay.showLobby();
-
   // Resolve where to connect: local dev connects straight to the game server;
   // a deployed client runs the matchmaking flow (ticket -> poll -> connection
   // info). A stable per-browser id keys matchmaking + doubles as a display name.
   const localPlayerId = getOrCreateLocalPlayerId();
-  void resolveConnection(config, localPlayerId)
-    .then((conn) => {
+  const displayName = getOrCreateRacerName();
+
+  /**
+   * Run the matchmaking flow, reporting progress on the matchmaking overlay so
+   * the player always sees state (searching / elapsed / failed+retry) rather
+   * than a lobby that looks frozen. The lobby only appears once we're connected
+   * and the server sends its first snapshot.
+   */
+  async function beginMatchmaking(): Promise<void> {
+    // Reset join state so a retry doesn't inherit the previous attempt's.
+    joinedMatch = false;
+    net.disconnect();
+    overlay.showMatchmaking('Starting up…');
+    try {
+      const conn = await resolveConnection(config, localPlayerId, (s) => {
+        overlay.showMatchmaking(s.message, s.elapsedSeconds, s.phase === 'failed');
+      });
       net.connect(conn.url, {
         playerSessionId: conn.playerSessionId,
-        displayName: `Racer-${localPlayerId.slice(0, 4)}`,
+        displayName,
         carSkin: 'default',
       });
-    })
-    .catch((err) => {
-      console.error('[matchmaking] failed to find a match:', err);
-    });
+      overlay.showMatchmaking('Connecting to the race…');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[matchmaking] failed:', msg);
+      // Show the failure with a retry button.
+      overlay.showMatchmaking(msg, undefined, true);
+    }
+  }
+
+  void beginMatchmaking();
 
   // Input tick: only while racing. Sample, predict locally, and send.
   setInterval(() => {
@@ -116,7 +194,10 @@ function main(): void {
     const playerId = net.getPlayerId();
     const cars: RenderCar[] = [];
 
-    // Local car: predicted.
+    const snap = net.getLatestSnapshot();
+    const me = snap?.cars.find((c) => c.playerId === playerId);
+
+    // Local car: predicted. Boost state comes from the authoritative snapshot.
     const local = predictor?.getCar();
     if (local) {
       cars.push({
@@ -125,6 +206,8 @@ function main(): void {
         rotation: headingToQuatY(local.heading),
         phase: local.phase,
         isLocal: true,
+        boosting: me?.boosting ?? false,
+        color: colorHexFor(local.playerId),
       });
     }
 
@@ -136,57 +219,70 @@ function main(): void {
         rotation: c.rotation,
         phase: c.phase,
         isLocal: false,
+        boosting: c.boosting,
+        color: colorHexFor(c.playerId),
       });
     }
 
     renderer.setCars(cars);
+    if (snap) renderer.setPickups(snap.pickups.map((p) => p.active), now);
     renderer.render();
 
-    const snap = net.getLatestSnapshot();
-    if (hud) {
-      hud.textContent =
-        phase === 'racing' && snap ? buildHud(snap, playerId) : '';
+    // Audio: engine tone from local speed; one-shot sfx on item transitions.
+    if (local && phase === 'racing') {
+      audio.setEngineSpeed(Math.abs(local.speed) / CAR_MAX_SPEED);
+    } else {
+      audio.setEngineSpeed(0);
+    }
+    if (me) {
+      if (me.boosting && !prevBoosting) audio.boost();
+      if (me.heldItem && me.heldItem !== prevHeldItem) audio.pickup();
+      prevBoosting = me.boosting;
+      prevHeldItem = me.heldItem;
+    }
+
+    if (hudPanel && phase === 'racing' && snap) {
+      hudPanel.update(
+        snap,
+        playerId,
+        carColor(playerId ? (playerMeta.get(playerId)?.colorIndex ?? 0) : 0).css,
+      );
     }
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 }
 
-/** Compose the HUD line: lap, position, and race clock for the local car. */
-function buildHud(snap: Snapshot, playerId: string | undefined): string {
-  const seconds = (snap.clockMs / 1000).toFixed(1);
-  const me = snap.cars.find((c) => c.playerId === playerId);
-  if (!me) {
-    return `${snap.racePhase} · ${snap.cars.length} cars · ${seconds}s`;
+/**
+ * A stable per-TAB racer name (e.g. "ChrisSpeed"), persisted for the tab's
+ * lifetime. sessionStorage (not localStorage) is deliberate: localStorage is
+ * shared across every tab of the same browser, so two tabs joining the same
+ * match would read back one identity and show the same name. sessionStorage is
+ * scoped per tab, which keeps names distinct while still surviving reloads.
+ */
+function getOrCreateRacerName(): string {
+  const key = 'racer.name';
+  let name = sessionStorage.getItem(key);
+  if (!name) {
+    name = randomRacerName();
+    sessionStorage.setItem(key, name);
   }
-  const total = snap.cars.length;
-  const lap = Math.min(me.lap + 1, RACE_LAPS);
-  const status =
-    me.phase === 'recovering'
-      ? 'RECOVERING'
-      : me.phase === 'finished'
-        ? `FINISHED P${me.place}`
-        : `P${positionOf(snap, me.playerId)}/${total}`;
-  return `Lap ${lap}/${RACE_LAPS} · ${status} · ${seconds}s`;
+  return name;
 }
 
-/** A stable per-browser player id, persisted in localStorage. */
+/**
+ * A stable per-TAB player id. Per-tab for the same reason as the name above:
+ * matchmaking keys off this id, so sharing it across tabs would make two
+ * players look like one returning player.
+ */
 function getOrCreateLocalPlayerId(): string {
   const key = 'racer.playerId';
-  let id = localStorage.getItem(key);
+  let id = sessionStorage.getItem(key);
   if (!id) {
     id = `p_${Math.random().toString(36).slice(2, 10)}`;
-    localStorage.setItem(key, id);
+    sessionStorage.setItem(key, id);
   }
   return id;
-}
-
-/** Rough live position: rank by lap then last checkpoint cleared. */
-function positionOf(snap: Snapshot, playerId: string): number {
-  const ranked = [...snap.cars].sort(
-    (a, b) => b.lap - a.lap || b.lastCheckpoint - a.lastCheckpoint,
-  );
-  return ranked.findIndex((c) => c.playerId === playerId) + 1;
 }
 
 main();

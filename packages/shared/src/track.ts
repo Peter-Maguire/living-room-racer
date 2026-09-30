@@ -61,6 +61,8 @@ export const trackSchema = z.object({
   recoverySpline: z.array(recoveryPointSchema).min(2),
   /** Up to MAX_PLAYERS starting-grid transforms. */
   spawnGrid: z.array(z.object({ position: vec3Schema, rotation: quatSchema })),
+  /** Positions of power-up pickup pads on the track (XZ used; y for render). */
+  pickups: z.array(vec3Schema).default([]),
   /** World Y below which a car counts as fallen off the table. */
   fallY: z.number(),
 });

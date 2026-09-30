@@ -50,8 +50,10 @@ Resources:
   MatchmakingFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: dist/matchmaking.handler
-      CodeUri: ../../packages/api
+      # build/ holds self-contained esbuild ESM bundles (.mjs) — see
+      # packages/api/scripts/bundle.mjs — so no node_modules is uploaded.
+      Handler: matchmaking.handler
+      CodeUri: ../../packages/api/build
       Policies:
         - Statement:
             - Effect: Allow
@@ -77,8 +79,8 @@ Resources:
   ProfileFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: dist/profile.handler
-      CodeUri: ../../packages/api
+      Handler: profile.handler
+      CodeUri: ../../packages/api/build
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref PlayersTableName

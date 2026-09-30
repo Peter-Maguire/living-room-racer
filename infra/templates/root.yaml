@@ -9,9 +9,18 @@ Parameters:
   EnvName:
     Type: String
     Default: dev
-  GameLiftBuildId:
+  GameServerImageUri:
     Type: String
-    Description: GameLift build id from `aws gamelift upload-build`.
+    Default: ''
+    Description: >
+      ECR image URI for the game server container (built by the deploy scripts).
+      Leave empty to skip the GameLift + matchmaking stacks and deploy everything
+      else; set it to enable hosted game servers on a managed container fleet.
+
+Conditions:
+  # Only create the GameLift container fleet + FlexMatch once an image exists.
+  # Referencing a missing image would fail validation and roll back the stack.
+  HasGameLiftBuild: !Not [!Equals [!Ref GameServerImageUri, '']]
 
 Resources:
   DataStack:
@@ -30,14 +39,16 @@ Resources:
 
   GameLiftStack:
     Type: AWS::CloudFormation::Stack
+    Condition: HasGameLiftBuild
     Properties:
       TemplateURL: ./gamelift.yaml
       Parameters:
         EnvName: !Ref EnvName
-        BuildId: !Ref GameLiftBuildId
+        GameServerImageUri: !Ref GameServerImageUri
 
   MatchmakingStack:
     Type: AWS::CloudFormation::Stack
+    Condition: HasGameLiftBuild
     DependsOn: GameLiftStack
     Properties:
       TemplateURL: ./matchmaking.yaml
@@ -50,7 +61,6 @@ Resources:
     DependsOn:
       - DataStack
       - IdentityStack
-      - MatchmakingStack
     Properties:
       TemplateURL: ./api.yaml
       Parameters:
@@ -58,7 +68,12 @@ Resources:
         UserPoolId: !GetAtt IdentityStack.Outputs.UserPoolId
         PlayersTableName: !GetAtt DataStack.Outputs.PlayersTableName
         LeaderboardsTableName: !GetAtt DataStack.Outputs.LeaderboardsTableName
-        MatchmakingConfigName: !GetAtt MatchmakingStack.Outputs.MatchmakingConfigName
+        # Empty when GameLift is skipped; the matchmaking Lambda treats that as
+        # "matchmaking not configured" and returns a clear error.
+        MatchmakingConfigName: !If
+          - HasGameLiftBuild
+          - !GetAtt MatchmakingStack.Outputs.MatchmakingConfigName
+          - ''
 
   WebStack:
     Type: AWS::CloudFormation::Stack
@@ -84,6 +99,7 @@ Outputs:
   IdentityPoolId:
     Value: !GetAtt IdentityStack.Outputs.IdentityPoolId
   MatchmakingConfigName:
+    Condition: HasGameLiftBuild
     Value: !GetAtt MatchmakingStack.Outputs.MatchmakingConfigName
   WebDistributionDomain:
     Value: !GetAtt WebStack.Outputs.DistributionDomain

@@ -127,6 +127,15 @@ function buildSpawnGrid() {
   return grid;
 }
 
+/** Pickup pads on the racing line, spaced around the far/mid parts of the lap. */
+function buildPickups() {
+  const ts = [0.25, 0.5, 0.75];
+  return ts.map((t) => {
+    const p = racingLinePoint(t);
+    return { x: p.x, y: 0.3, z: p.z };
+  });
+}
+
 export const OVAL_TRACK: Track = trackSchema.parse({
   id: 'coffee-table-oval',
   name: 'Coffee Table Oval',
@@ -140,5 +149,6 @@ export const OVAL_TRACK: Track = trackSchema.parse({
   checkpoints: buildCheckpoints(),
   recoverySpline: buildRecoverySpline(),
   spawnGrid: buildSpawnGrid(),
+  pickups: buildPickups(),
   fallY: -2,
 });

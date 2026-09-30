@@ -1,75 +1,164 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  GameLift compute tier: build reference, managed EC2 fleet, alias, and a
-  session-placement queue. The game-server binary is uploaded out-of-band with
-  `aws gamelift upload-build`; the resulting BuildId is passed in as a parameter
-  so this template stays declarative.
+  GameLift compute tier (managed CONTAINER fleet). The game server image bundles
+  the official Amazon GameLift Servers game server wrapper, which owns the
+  GameLift lifecycle and launches our Node game server as a child process (AWS
+  publishes no Node.js server SDK, so the wrapper is the supported path).
+
+  The container image must already exist in ECR before this stack is created;
+  the deploy scripts build + push it and pass the URI in as GameServerImageUri.
 
 Parameters:
   EnvName:
     Type: String
-  BuildId:
+  GameServerImageUri:
     Type: String
-    Description: GameLift build id from `aws gamelift upload-build`.
-  ServerPort:
+    Description: ECR image URI (with tag or digest) for the game server container.
+  ServerSdkVersion:
+    Type: String
+    Default: 5.6.0
+    Description: >
+      Server SDK version embedded in the image. The wrapper links the Go server
+      SDK (see vendor/gamelift-wrapper go.mod), currently 5.6.0.
+  GamePort:
     Type: Number
-    Default: 3001
+    Default: 37016
+    Description: First container port the game server can listen on.
+  GamePortRangeEnd:
+    Type: Number
+    Default: 37031
+    Description: >
+      Last container port in the range. The range must contain at least
+      GroupsPerInstance ports so every concurrent game server container can bind.
   FleetInstanceType:
     Type: String
-    Default: c5.large
-  MinSize:
+    Default: c6i.large
+  # Sizing note: these are PER container group, and GroupsPerInstance groups must
+  # fit inside the instance (minus what GameLift reserves for its own agent).
+  # The Node game server is small (~85 MiB resident), so 1 GiB/0.5 vCPU is ample.
+  # c6i.large = 2 vCPU / 4 GiB, so 2 groups x (0.5 vCPU, 1 GiB) fits comfortably.
+  TotalVcpuLimit:
     Type: Number
-    Default: 0
-  MaxSize:
+    Default: 0.5
+  TotalMemoryLimitMebibytes:
+    Type: Number
+    Default: 1024
+  GroupsPerInstance:
     Type: Number
     Default: 2
-  DesiredInstances:
-    Type: Number
-    Default: 1
+    Description: Concurrent game server containers (matches) per instance.
 
 Resources:
-  Fleet:
-    Type: AWS::GameLift::Fleet
+  # Role GameLift assumes to operate the fleet: pull the image, write logs.
+  FleetRole:
+    Type: AWS::IAM::Role
     Properties:
-      Name: !Sub 'racer-${EnvName}-fleet'
-      BuildId: !Ref BuildId
-      EC2InstanceType: !Ref FleetInstanceType
-      FleetType: ON_DEMAND
-      DesiredEC2Instances: !Ref DesiredInstances
-      MinSize: !Ref MinSize
-      MaxSize: !Ref MaxSize
-      RuntimeConfiguration:
-        ServerProcesses:
-          # Run several server processes per instance, one per match.
-          - LaunchPath: /local/game/dist/index.js
-            Parameters: !Sub '--port ${ServerPort}'
-            ConcurrentExecutions: 4
-      EC2InboundPermissions:
-        - FromPort: !Ref ServerPort
-          ToPort: !Ref ServerPort
+      RoleName: !Sub 'racer-${EnvName}-gamelift-fleet-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: gamelift.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref AWS::AccountId
+      Policies:
+        - PolicyName: fleet-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Pull the game server image from ECR.
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: '*'
+              # Ship container logs to CloudWatch.
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:CreateLogGroup
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource: '*'
+              # REQUIRED for the game server process to connect to the GameLift
+              # server-SDK websocket (wss://<region>.api.amazongamelift.com).
+              # Without these the SDK handshake is rejected with
+              # "User is not authorized to access this resource" / 403.
+              - Effect: Allow
+                Action:
+                  - gamelift:ConnectToServerProcessWebsocket
+                  - gamelift:DescribeGameSessions
+                  - gamelift:ActivateGameSession
+                  - gamelift:ActivateServerProcess
+                  - gamelift:TerminateServerProcess
+                  - gamelift:GetComputeAuthToken
+                  - gamelift:GetFleetRoleCredentials
+                Resource: '*'
+              # The SDK websocket is an AWS-managed API Gateway endpoint, so the
+              # SigV4-signed connection also needs execute-api:Invoke.
+              - Effect: Allow
+                Action:
+                  - execute-api:Invoke
+                  - execute-api:ManageConnections
+                Resource: '*'
+
+  # Describes the game server container: image, port range, and the server SDK
+  # version the image integrates (via the bundled wrapper).
+  ContainerGroupDefinition:
+    Type: AWS::GameLift::ContainerGroupDefinition
+    Properties:
+      Name: !Sub 'racer-${EnvName}-server-group'
+      OperatingSystem: AMAZON_LINUX_2023
+      ContainerGroupType: GAME_SERVER
+      TotalVcpuLimit: !Ref TotalVcpuLimit
+      TotalMemoryLimitMebibytes: !Ref TotalMemoryLimitMebibytes
+      GameServerContainerDefinition:
+        ContainerName: !Sub 'racer-${EnvName}-server'
+        ImageUri: !Ref GameServerImageUri
+        ServerSdkVersion: !Ref ServerSdkVersion
+        PortConfiguration:
+          ContainerPortRanges:
+            # MUST provide at least as many ports as GroupsPerInstance, otherwise
+            # additional container groups have no port to bind and the GameLift
+            # agent rejects the process.
+            - FromPort: !Ref GamePort
+              ToPort: !Ref GamePortRangeEnd
+              Protocol: TCP
+
+  ContainerFleet:
+    Type: AWS::GameLift::ContainerFleet
+    DependsOn: ContainerGroupDefinition
+    Properties:
+      Description: !Sub 'Living-Room Racer game servers (${EnvName})'
+      FleetRoleArn: !GetAtt FleetRole.Arn
+      GameServerContainerGroupDefinitionName: !Ref ContainerGroupDefinition
+      InstanceType: !Ref FleetInstanceType
+      BillingType: ON_DEMAND
+      GameServerContainerGroupsPerInstance: !Ref GroupsPerInstance
+      InstanceInboundPermissions:
+        - FromPort: !Ref GamePort
+          ToPort: !Ref GamePortRangeEnd
           IpRange: 0.0.0.0/0
           Protocol: TCP
 
-  FleetAlias:
-    Type: AWS::GameLift::Alias
-    Properties:
-      Name: !Sub 'racer-${EnvName}-alias'
-      RoutingStrategy:
-        Type: SIMPLE
-        FleetId: !Ref Fleet
-
+  # Queue that FlexMatch places matched sessions into.
   SessionQueue:
     Type: AWS::GameLift::GameSessionQueue
     Properties:
       Name: !Sub 'racer-${EnvName}-queue'
       TimeoutInSeconds: 60
       Destinations:
-        - DestinationArn: !Sub 'arn:aws:gamelift:${AWS::Region}:${AWS::AccountId}:alias/${FleetAlias}'
+        - DestinationArn: !GetAtt ContainerFleet.FleetArn
 
 Outputs:
   FleetId:
-    Value: !Ref Fleet
-  AliasId:
-    Value: !Ref FleetAlias
+    Value: !GetAtt ContainerFleet.FleetId
+  ContainerGroupDefinitionName:
+    Value: !Ref ContainerGroupDefinition
   QueueArn:
     Value: !Sub 'arn:aws:gamelift:${AWS::Region}:${AWS::AccountId}:gamesessionqueue/racer-${EnvName}-queue'

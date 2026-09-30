@@ -1,8 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  GameLift FlexMatch: matchmaking rule set and configuration. Places 2-8 players
-  into a single "racers" team using latency rules, then routes accepted matches
-  to the GameLift queue.
+  GameLift FlexMatch: matchmaking rule set and configuration. Groups 1-8 players
+  into a single "racers" team, then routes accepted matches to the GameLift queue.
 
 Parameters:
   EnvName:
@@ -14,12 +13,31 @@ Parameters:
     Type: String
     AllowedValues: ['true', 'false']
     Default: 'false'
+  RuleSetVersion:
+    Type: Number
+    Default: 2
+    Description: >
+      Bump this whenever RuleSetBody changes. Rule set bodies are IMMUTABLE, so a
+      body change forces resource replacement -- and CloudFormation refuses to
+      replace a custom-named resource. Versioning the name sidesteps that.
 
 Resources:
   RuleSet:
     Type: AWS::GameLift::MatchmakingRuleSet
     Properties:
-      Name: !Sub 'racer-${EnvName}-ruleset'
+      Name: !Sub 'racer-${EnvName}-ruleset-v${RuleSetVersion}'
+      # NOTE on two deliberate choices here:
+      #
+      # 1. No `latency` rule. A latency rule can only place players who report
+      #    LatencyInMs for a region; any player without latency data is
+      #    unplaceable and the ticket TIMES OUT. This deployment is single-region,
+      #    so the rule added failure risk for no benefit. Reinstate it (and have
+      #    the client send latencyMs) when running multi-region.
+      #
+      # 2. minPlayers starts at 2 but EXPANDS down to 1 after 15s. Without this,
+      #    a lone player can never be matched and always times out. With it,
+      #    players who queue together still get grouped into one race, while a
+      #    solo player falls back to a single-player race instead of failing.
       RuleSetBody: |
         {
           "name": "racer_ruleset",
@@ -27,19 +45,12 @@ Resources:
           "teams": [
             { "name": "racers", "minPlayers": 2, "maxPlayers": 8 }
           ],
-          "rules": [
-            {
-              "name": "latency",
-              "type": "latency",
-              "maxLatency": 180
-            }
-          ],
+          "rules": [],
           "expansions": [
             {
-              "target": "rules[latency].maxLatency",
+              "target": "teams[racers].minPlayers",
               "steps": [
-                { "waitTimeSeconds": 10, "value": 220 },
-                { "waitTimeSeconds": 20, "value": 300 }
+                { "waitTimeSeconds": 15, "value": 1 }
               ]
             }
           ]

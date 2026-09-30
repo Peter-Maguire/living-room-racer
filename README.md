@@ -31,6 +31,10 @@ pnpm dev:server     # run the game server locally
 pnpm dev:client     # run the Vite dev server for the client
 ```
 
+Local development connects the client directly to `http://localhost:3001`; it does **not** require GameLift, Docker, or AWS credentials. The local defaults live in `packages/client/.env` and `packages/server/.env` (copy the corresponding `.env.example` files if they are missing).
+
+`infra/scripts/outputs.ps1` and `outputs.sh` generate `packages/client/.env.production` for deployment builds. Do not run the GameLift wrapper or its Docker image for ordinary local play: those are for the managed GameLift container fleet. GameLift Anywhere requires a separate Anywhere-specific wrapper configuration.
+
 ## Infrastructure
 
 All AWS resources are defined in CloudFormation under `infra/`. See [`infra/README.md`](./infra/README.md) for the from-scratch bootstrap and the local iteration loop.

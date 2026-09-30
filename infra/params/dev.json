@@ -1,4 +1,4 @@
 {
   "EnvName": "dev",
-  "GameLiftBuildId": "REPLACE_WITH_BUILD_ID"
+  "GameServerImageUri": ""
 }

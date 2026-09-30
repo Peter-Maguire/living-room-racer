@@ -28,7 +28,14 @@ interface StartBody {
 export async function handler(
   event: APIGatewayProxyEventV2,
 ): Promise<APIGatewayProxyResultV2> {
-  if (!CONFIG_NAME) return serverError('matchmaking not configured');
+  // GameLift/FlexMatch is optional: the stacks are skipped when no real build id
+  // is supplied. Report that clearly instead of failing as a server error.
+  if (!CONFIG_NAME) {
+    return json(503, {
+      message:
+        'Matchmaking is not configured in this environment (GameLift fleet not deployed). Play locally, or deploy with a GameLift build id.',
+    });
+  }
 
   // GET = status poll (uses query params, no body).
   if (event.requestContext.http.method === 'GET') {

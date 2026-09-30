@@ -372,3 +372,177 @@ Do these as part of P4 (AWS integration), roughly in this order:
 7. `root.yaml` nesting + cross-stack outputs; `bootstrap.sh`, `deploy.sh`, `outputs.sh`, `teardown.sh`.
 8. GitHub Actions calling the same scripts for `staging`/`prod`.
 9. Prove it: run `teardown.sh dev` then `bootstrap.sh dev` in a clean account to confirm from-scratch works.
+
+---
+
+## 15. Stretch Goals
+
+Post-MVP polish and content. None of these are required for a playable race — they're the "makes it feel like a real game" layer. Each entry notes what already exists in the codebase and what actually has to change, since several of these are cheaper (or more expensive) than they first look.
+
+### 15.1 Unique car colours, consistent across all players
+
+Every car gets a distinct colour, and **all players see the same car as the same colour**. Consistency is the whole requirement — if each client picked colours locally, "the blue car cut me off" would mean nothing in voice chat.
+
+**What already exists:** `joinMatchSchema` and `LobbyState.players[]` both carry a `carSkin` string, so there's already a per-player cosmetic channel on the wire. `RenderCar` in the renderer takes per-car render data.
+
+**Approach — server assigns, never the client:**
+- Keep a fixed **colour palette** in `shared` (8 entries, one per grid slot, chosen to stay distinguishable on the living-room backdrop and for colour-blind players — avoid a red/green-only pairing).
+- On `addPlayer`, the server claims the lowest **free** palette index and stores it on the `Player`. Free-list rather than `players.size`, so a mid-lobby leave/join can't hand two cars the same colour.
+- Broadcast it in `LobbyState` (extend the player entry with `colorIndex`, alongside the existing `carSkin`).
+- Client builds a `playerId -> colour` map from `LobbyState` and applies it when constructing `RenderCar`s. Note that `CarState` in snapshots has no cosmetic fields and shouldn't get any — colour is static per player, so sending it every snapshot at 15–20 Hz is wasted bandwidth. Lobby state is the right channel.
+- Show the colour in the lobby player list and on the results screen so the mapping is learnable before the race starts.
+
+**Later:** let players *request* a preferred colour in the lobby, with the server arbitrating conflicts (first-come, loser gets the next free slot). Server still has the final say, which also keeps cosmetics unlock-validated per Section 11.
+
+### 15.2 More tracks
+
+More authored content using the existing track model — no schema changes required.
+
+**Scope note:** all ideas below are deliberately **single-level**. Off-track detection is a `trackHalfWidth` corridor measured in **XZ only** (see `track.ts`), and `findRecoveryPoint` ranks candidates with `distSqXZ`, so any geometry that stacks two drivable surfaces in the same XZ footprint (bridges, over/under crossings) would read as on-track for both and could respawn a car on the wrong deck. Staying single-level keeps every track below pure content work. Elevation *changes* are fine; overlapping decks are not.
+
+**Track ideas** (living-room / tabletop scale, in rough order of authoring difficulty):
+
+| Track | Concept | Features |
+|-------|---------|----------|
+| **Coffee Table Oval** | *(exists)* Rounded rectangle on the tabletop | Baseline |
+| **Rug Weave Eight** | *(exists)* Lemniscate across a rug | Self-crossing, flat |
+| **Breakfast Bar Circuit** | Long straights down the counter, hairpins around plates and bowls | Top-speed track; tests boost balance |
+| **Kitchen Tile Sprint** | Grid of tiles with a spilled-milk slick on one corner | First surface-grip variation |
+| **Toy Box Scramble** | Scattered building blocks as chicanes, very tight hairpins | Technical, low-speed, collision-heavy |
+| **Sofa Cushion Canyon** | Valley between cushions, fabric banking on the curves | Banked turns, soft-edge off-track tuning |
+| **Bathmat Rally** | Alternating high-grip rug and slick tile sections | Surface transitions as the core gimmick |
+| **Desk Cable Run** | Tight weaving between monitor stands, mugs, and pen pots | Narrowest corridor; precision driving |
+| **Laundry Basket Loop** | Ramp into an upturned basket with a banked wall-ride inside | Wall-riding; likely needs real physics support, most expensive here |
+
+**Supporting work worth doing alongside:**
+- **Per-surface grip tags** on track sections, which several ideas above lean on. Feeds directly into the surface-dependent tyre noise in 15.4.
+- A **track-authoring workflow** (Section 12, P5 item 24). Both current tracks are procedural TypeScript deriving everything from one parametric centerline — that pattern scales well and is worth keeping for greybox layouts before committing to art.
+
+### 15.3 More exciting UI
+
+**Current state:** `overlay.ts` injects a flat CSS block and builds the lobby/results as plain DOM; the HUD is a single `hud.textContent` string assembled in `buildHud()`. Functional, deliberately minimal.
+
+- **HUD** — replace the one-line text with real elements: a large lap counter, position as "2nd/6", a lap-delta split against your best, a segmented item slot, and a speed readout. Animate on change (place gain/loss flash, final-lap pulse).
+- **Minimap** — already listed in Section 10 but not built. Cheap to do from the track's recovery spline as the outline, with cars as coloured dots reusing 15.1's palette.
+- **Countdown** — big animated 3-2-1-GO with scale/fade, synced to the server's `countdownMs` rather than a local timer, so it can't drift from the authoritative start.
+- **Lobby** — car colour swatches, per-player ready animation, a track preview thumbnail (top-down render of the spline) that updates when the track changes.
+- **Results** — animate rows in by finishing order, highlight personal bests, show best-lap and total side by side, add a rematch countdown.
+- **Race events** — transient toasts for overtakes, "final lap", recovery ("Nice save!"), and item pickups.
+- **Motion polish** — speed-scaled camera FOV/shake, subtle vignette and chromatic shift while boosting, screen-edge blur at high speed.
+
+Keep it DOM/CSS. Section 2 allows a light React layer, but the overlay is small enough that adding a framework now would cost more than it saves; revisit only if the HUD's state handling gets unwieldy.
+
+### 15.4 Better noises
+
+**Current state:** `audio.ts` is fully procedural Web Audio — one sawtooth oscillator for the engine drone with speed-mapped frequency, plus three `blip()` one-shots (boost, pickup, go). No asset files, no dependencies. Its docblock already anticipates swapping in sampled sfx.
+
+- **Engine** — replace the single oscillator with a **layered** model: two or three detuned oscillators plus a filtered noise layer, a low-pass whose cutoff tracks throttle, and load-dependent timbre so accelerating sounds different from coasting at the same speed. Add a rev-limiter wobble near top speed.
+- **Surface-dependent tyre noise** — filtered noise whose level tracks lateral slip, re-voiced per surface (rug, wood, cushion). Falls out naturally once tracks carry surface tags.
+- **Impacts** — collision thumps scaled by impact velocity, distinct for car-vs-car and car-vs-scenery.
+- **Recovery** — a proper sequence: the off-track "uh-oh", a claw whirr, and the re-drop thud, timed to the recovery animation.
+- **Spatialisation** — route remote cars through `PannerNode`s positioned from their interpolated transforms, so you hear a rival coming up the inside. This is the single biggest perceptual upgrade and works with the procedural engine as-is.
+- **Mix discipline** — a master bus with per-category gain (engine / sfx / music), ducking of the engine layer under important one-shots, and a persisted mute/volume control.
+- **Sampled sfx** — bring in **howler.js** (already in the Section 2 stack) for recorded impacts and UI sounds, keeping the procedural engine for its continuous speed response. Call sites shouldn't need to change.
+
+### 15.5 Banging soundtrack
+
+- **Per-phase tracks** — distinct lobby, race, and results music, crossfaded on phase change (the client already has authoritative phase transitions via `setPhase`, so there's a clean hook).
+- **Dynamic intensity** — layered stems (drums / bass / lead / pads) mixed by race state: add layers on the final lap, when you're in a podium position, or during a boost. Much more effective than switching songs, and avoids abrupt cuts.
+- **Musical stingers** — short cues on race start, overtake, final lap, and finish, pitched to the current track's key so they land musically rather than clashing.
+- **Beat-synced UI** — if the tempo is known, pulse countdown and menu animations on the beat. Cheap to do, disproportionately satisfying.
+- **Practicalities** — stream compressed audio (Opus/AAC) from CloudFront, preload the lobby track during matchmaking so the drop isn't late, respect the browser's gesture requirement via the existing `audio.resume()` on ready-up, and keep music on its own gain bus so it can be muted independently. Licensing matters: use original or properly licensed music, since anything streamed to players is a distribution.
+
+### 15.6 More power-ups
+
+**Current state:** exactly one item exists. `ItemType` is the single-member union `'boost'`; `updateItems()` in `physics.ts` hardcodes `car.heldItem = 'boost'` on pad collection and `boostTimer = BOOST_SECONDS` on use. Pads live in `track.pickups` with cooldowns in `world.pickupCooldownUntil` keyed by pad index and compared against `world.tick`. Snapshots carry `heldItem` plus a `boosting` boolean.
+
+Two structural gaps have to be closed before most of the interesting items are possible. Both are worth doing once, properly.
+
+**(a) Randomised item rolls vs. determinism.** `stepWorld` is documented as deterministic — "no RNG, no wall-clock" — because the client replays it for prediction and reconciliation. Item selection needs randomness (and ideally position-weighted, Mario Kart style: last place gets better items). Options:
+- **Seeded PRNG in world state** — store a seed/counter in `SimWorld`, advance it on each roll. Stays deterministic and client-predictable, but the client can then *see* what it's about to get, and a modified client could fish for good rolls.
+- **Server-only roll** (recommended) — the server decides the item and the client learns it from the next snapshot. Prediction simply doesn't guess the item; it predicts driving and lets `heldItem` arrive authoritatively. A ~50–100 ms delay before the item icon appears is imperceptible, and it keeps rolls uncheatable. Note `stepSingleCar` already builds a one-entry world with an **empty** `pickupCooldownUntil`, so pad collection is approximate under prediction today — this direction is consistent with that.
+
+**(b) World entities for projectiles and hazards.** `SimWorld` holds only `cars` and pad cooldowns, and `Snapshot` only `cars` and `pickups`. Anything that exists independently of a car (a shell in flight, a dropped mine, an oil slick) needs a new entity list in the world, a matching snapshot field, and interpolation on the client. Also needed: a **per-car effect state** richer than today's single `boostTimer`, since `carStateToSimCar` currently reconstructs boost from a boolean and would mis-handle several concurrent timed effects. A small `effects: { type, secondsRemaining }[]` is enough.
+
+**Item ideas:**
+
+| Item | Effect | Notes / cost |
+|------|--------|--------------|
+| **Boost** | *(exists)* Temporary top-speed + accel multiplier | Baseline |
+| **Oil Slick** | Drop a puddle behind you; cars driving over it lose steering grip briefly | First world entity; static, no movement — cheapest of the new items |
+| **Marble** | Roll a marble forward in a straight line; spins out the first car hit | First projectile: needs entity movement + collision vs cars |
+| **Sticky Tape** | Drop a patch that hard-slows anyone crossing it | Reuses the Oil Slick entity, different effect |
+| **Feather** | Brief one-shot hop over a hazard or a car | Needs real Y motion in the sim; currently `integrate()` only moves XZ |
+| **Magnet** | Pulls you toward the car ahead for a second or two | No new entity, but needs "car ahead" resolution from checkpoint progress |
+| **Static Shock** | Short control-scramble on all cars within a small radius | Radius query only, no entity; reuses the lockout mechanic |
+| **Mini Mode** | Shrink briefly: faster and harder to hit, but shoved easily in collisions | Touches `CAR_COLLISION_RADIUS` per car, currently a global constant |
+| **Dust Cloud** | Obscures the screen of cars behind you | Purely client-side VFX driven by an authoritative effect flag — cheap and very satisfying |
+| **Homing Bee** | Slow projectile that tracks the car in the position ahead of you | Most expensive: projectile + targeting + prediction; do last |
+
+**Balance and fairness:**
+- **Position weighting** — roll from a weighted table keyed off live race position so trailing players get catch-up items and the leader mostly gets Boost. This is what makes items feel fair rather than random.
+- **Reuse the existing lockout** — `RECOVERY_LOCKOUT_SECONDS` already implements "controls ignored, then handed back", and recovery grants brief invulnerability. Spin-outs and stuns should reuse that path rather than inventing a parallel mechanic, and item hits should respect the post-recovery invulnerability window so a car can't be re-hit the instant it lands.
+- **Never cost lap progress** — consistent with the existing recovery rule in Section 1. Items cost time, never a lap.
+- **One item slot** — keep the current single-`heldItem` model. It's readable at a glance in the HUD and sidesteps inventory UI entirely.
+- **All effects server-authoritative**, per Section 9. The client renders effects and predicts driving; it never decides that a hit landed.
+
+**Tuning constants** go in `constants.ts` alongside `BOOST_MULTIPLIER` / `BOOST_SECONDS`, since that file is explicitly part of the netcode contract and must stay identical on both sides.
+
+### 15.7 Real graphics instead of solid colours
+
+Replace the greybox with actual art: modelled toy cars, a textured living-room scene, and lighting that sells the "tiny cars on a real floor" fantasy. This is the single biggest change in perceived quality, and the one most likely to reveal performance limits.
+
+**Current state:** everything is untextured primitives with flat `MeshStandardMaterial` colours.
+- Cars are a shared `BoxGeometry(1, 0.5, 2)`, coloured blue if local and orange-red otherwise.
+- The track is a procedurally generated ribbon (built in `buildTrack()` from the recovery spline, `trackHalfWidth` to each side) in flat dark grey.
+- The "living room" is a single 80×60 green `PlaneGeometry`.
+- Pickups are gold octahedra; the finish line is a white plane.
+- Lighting is one ambient plus one directional light, with **no shadows enabled at all** — no `shadowMap`, no `castShadow`/`receiveShadow`.
+- There is no asset loader, no texture, and no GLTF anywhere in the client.
+
+Section 10 already commits to the target stack (GLTF + Draco, instanced props, baked lighting, texture atlases, served from S3/CloudFront). This entry is the sequenced version of that work.
+
+**Asset pipeline (do this first — everything else depends on it).** There's no loader today, and `main()` is fully synchronous: it constructs the renderer, calls `buildTrack()`, and starts the frame loop immediately. Loading real assets means:
+1. Add `GLTFLoader` + `DRACOLoader` (the Draco decoder needs serving alongside the bundle).
+2. Introduce an **async asset-load phase** with a loading screen before the first frame. The lobby is a natural place to hide this — load during matchmaking and ready-up so it's invisible.
+3. Keep a **greybox fallback**. If an asset fails to load, fall back to the current primitive so a missing file never yields a blank screen. This also keeps local dev fast when assets aren't present.
+
+**Cars.**
+- Low-poly GLTF body with PBR maps (albedo / normal / roughness). `MeshStandardMaterial` is already PBR, so this is incremental — no shader work.
+- **Separate wheels** from the body so they can spin (scaled from `car.speed`) and steer visibly on the front axle.
+- **Dependency on 15.1:** once cars are textured models, per-car colour can't just be `material.color` on the whole mesh. Author the body with a dedicated tintable material slot (or a colour-mask channel) so the palette index tints only the paintwork, leaving tyres, glass, and decals untouched. Worth deciding *before* modelling, since it's a mesh-authoring constraint, not a code one.
+- Clone the loaded model per car, but **share geometry and textures** across clones — mirroring how `carGeometry` is shared today. Note `removeCar()` currently disposes only the material because geometry is shared; that invariant needs revisiting when each car owns a cloned material for tinting.
+- Toy-appropriate detail: chunky plastic bevels, visible seam lines, a slightly worn finish. It should read as a *toy*, not a scale model.
+
+**Track surface.** Keep generating the ribbon procedurally — it's the same geometry the physics uses, which is exactly why the drivable corridor is currently legible. Upgrade it in place rather than replacing it with an authored mesh:
+- Generate proper **UVs** along the ribbon (V across the width, U along the arc length) so a tiling road/rug texture follows the curve without stretching.
+- Add edge detailing: curbs, worn tape edges, or carpet fringing where the corridor ends, so the off-track boundary stays obvious once the flat grey is gone. **Don't lose this legibility** — players currently rely on the colour change to see where recovery triggers.
+- Textured start/finish line and checkpoint markers instead of white planes.
+
+**Scenery.** Replace the green plane with a real room: floorboards or carpet with a normal map, plus instanced props (books, pencils, mugs, cereal boxes, cushions) as the scenery Section 1 describes. Use `InstancedMesh` for repeated props. Cars stay individual meshes — at 8 players that's trivial.
+
+**Lighting and shadows.** The biggest cheap win, because nothing currently grounds the cars to the floor:
+- Enable `shadowMap` with `castShadow` on cars and props, `receiveShadow` on the floor and track.
+- A single directional light with a tight, well-fitted shadow camera (the play area is only ~38×22 m, so shadow resolution can be generous).
+- **Contact shadows** matter more than accurate ones at this scale — a small blob shadow directly under each car does most of the work of making it feel like a physical object on a floor.
+- Bake static scenery lighting where possible (per Section 10) and keep only cars dynamic.
+- Consider a warm lamp key plus cool window fill; it reads as "indoors" instantly.
+
+**Effects.** Drift smoke and skid decals, boost exhaust and speed lines, sparks on collision, and a proper claw/hand model for the recovery animation (Section 10 lists this; it's still a placeholder dim-and-fade on the material today). All of these are driven by state the client already has.
+
+**Performance.** This is where the Section 13 "browser perf on low-end machines" risk becomes real. Draco-compress meshes, atlas textures, cap particles, keep draw calls down via instancing, and set a frame budget target early. Test on integrated graphics, not just a dev machine — and profile *after* enabling shadows, which is usually the first thing to blow the budget.
+
+**Camera.** Worth revisiting alongside the art. The camera is currently fixed at `(0, 46, 18)` looking at the origin, framed specifically for the oval's ~38×22 m extent. That framing won't survive the new tracks in 15.2, so either derive the camera from track bounds or move to the follow cam mentioned in Section 10.
+
+### 15.8 Suggested ordering
+
+Roughly by value-per-effort, and sequenced so nothing blocks on unfinished structural work:
+
+1. **Car colours** (15.1) — small, server-side, and everything else builds on the palette (minimap dots, lobby swatches, results rows).
+2. **UI pass** (15.3) — highest visible impact per hour; no engine changes needed.
+3. **Audio spatialisation + engine layering** (15.4) — big perceptual gain, self-contained in `audio.ts`.
+4. **Soundtrack** (15.5) — once the audio bus/mix structure from 15.4 exists.
+5. **More tracks** (15.2) — more of the existing procedural-centerline pattern, no schema change.
+6. **Power-up groundwork** (15.6) — server-side item rolls with position weighting, plus the per-car `effects` list. Ship a second item that needs no new entity (Static Shock or Dust Cloud) to prove the plumbing.
+7. **World entities, then the rest of the items** (15.6) — add the entity list and snapshot field once, then Oil Slick → Sticky Tape → Marble. Leave Homing Bee and Feather last; they need targeting and Y motion respectively.
+8. **Real graphics** (15.7) — biggest quality jump but the largest and most asset-dependent item, and it needs art that doesn't exist yet. Two exceptions worth pulling forward early, since both are code-only and improve the greybox immediately: **enabling shadows** (especially contact shadows under cars) and **camera framing derived from track bounds**, which 15.2 needs anyway. Settle the tintable-material decision with 15.1 before any car modelling starts.

@@ -42,3 +42,19 @@ export const CAR_ACCEL = 24; // m/s^2
 export const CAR_BRAKE = 30; // m/s^2
 export const CAR_STEER_RATE = 2.8; // rad/s at low speed
 export const CAR_DRIFT_GRIP = 0.6; // lateral grip while drifting (0..1)
+
+/** Collision radius (m) used for car-to-car push-apart. Cars are ~1x2 boxes. */
+export const CAR_COLLISION_RADIUS = 0.9;
+/** How strongly car collisions transfer speed (0..1). */
+export const CAR_COLLISION_RESTITUTION = 0.5;
+
+// --- Items / power-ups ----------------------------------------------------
+
+/** Radius (m) within which a car collects a pickup pad. */
+export const PICKUP_RADIUS = 1.6;
+/** Ticks a collected pickup pad stays inactive before respawning. */
+export const PICKUP_RESPAWN_TICKS = SIM_TICK_RATE * 5; // ~5s
+/** Speed multiplier applied to top speed + accel while boosting. */
+export const BOOST_MULTIPLIER = 1.6;
+/** Duration of a boost, in seconds. */
+export const BOOST_SECONDS = 1.5;

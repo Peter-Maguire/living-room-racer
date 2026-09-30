@@ -74,6 +74,11 @@ export class NetworkClient {
     this.socket?.emit(SocketEvents.PlayerReady, { ready });
   }
 
+  /** Ask the server to switch the track for the next race (lobby only). */
+  sendSelectTrack(trackId: string): void {
+    this.socket?.emit(SocketEvents.SelectTrack, { trackId });
+  }
+
   getLatestSnapshot(): Snapshot | null {
     return this.latestSnapshot;
   }

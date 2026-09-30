@@ -1,5 +1,6 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { randomRacerName } from '@racer/shared';
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { badRequest, json, serverError } from './http.js';
 
@@ -36,10 +37,10 @@ export async function handler(
       return json(200, existing.Item);
     }
 
-    // First-seen player: create a default profile.
+    // First-seen player: create a default profile with a fun racer name.
     const profile: Profile = {
       playerId,
-      displayName: `Racer-${playerId.slice(0, 6)}`,
+      displayName: randomRacerName(),
       createdAt: new Date().toISOString(),
       wins: 0,
     };

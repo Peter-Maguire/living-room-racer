@@ -40,37 +40,32 @@ if (-not $exists) {
     Write-Host '    exists'
 }
 
-Write-Host '==> [3/6] Building and uploading the game server as a GameLift build'
-# Build the server (and shared dep) so the uploaded build is runnable.
-Push-Location $script:RepoRoot
+Write-Host '==> [3/6] Building + pushing the game server container image to ECR'
+# The image bundles the official GameLift game server wrapper (see
+# packages/server/Dockerfile). If this fails we still deploy everything else;
+# the GameLift + matchmaking stacks are simply skipped.
+$imageUri = ''
 try {
-    pnpm --filter '@racer/shared' build
-    pnpm --filter '@racer/server' build
-} finally {
-    Pop-Location
-}
-
-$buildVersion = Get-Date -Format 'yyyyMMdd-HHmmss'
-$buildId = ''
-try {
-    $buildId = (aws gamelift upload-build `
-        --operating-system AMAZON_LINUX_2 `
-        --build-root (Join-Path $script:RepoRoot 'packages\server') `
-        --name "racer-$EnvName-server" `
-        --build-version $buildVersion `
-        --query 'Build.BuildId' --output text 2>$null).Trim()
+    $out = & (Join-Path $PSScriptRoot 'publish-server.ps1') -EnvName $EnvName
+    # publish-server.ps1 prints the image URI as its final line.
+    $imageUri = ($out | Where-Object { $_ -match '\.dkr\.ecr\..*amazonaws\.com/' } | Select-Object -Last 1)
+    if ($imageUri) { $imageUri = ([string]$imageUri).Trim() }
 } catch {
-    $buildId = ''
+    Write-Host "    image publish failed: $($_.Exception.Message)"
+    $imageUri = ''
 }
-if ([string]::IsNullOrWhiteSpace($buildId)) {
-    Write-Host '    WARNING: upload-build failed or GameLift not available; using placeholder.'
-    $buildId = 'REPLACE_WITH_BUILD_ID'
+if ([string]::IsNullOrWhiteSpace($imageUri)) {
+    Write-Host '    NOTE: no game server image was published.'
+    Write-Host '    Deploying WITHOUT the GameLift + matchmaking stacks (everything'
+    Write-Host '    else still deploys). Add hosted servers later with:'
+    Write-Host '      publish-server.ps1 -EnvName <env>'
+    Write-Host '      deploy.ps1 -EnvName <env> -GameServerImageUri <uri>'
 } else {
-    Write-Host "    build id: $buildId"
+    Write-Host "    image: $imageUri"
 }
 
 Write-Host '==> [4/6] Deploying stacks'
-& (Join-Path $PSScriptRoot 'deploy.ps1') -EnvName $EnvName -BuildId $buildId
+& (Join-Path $PSScriptRoot 'deploy.ps1') -EnvName $EnvName -GameServerImageUri $imageUri
 
 Write-Host '==> [5/6] Outputs written to package .env files'
 

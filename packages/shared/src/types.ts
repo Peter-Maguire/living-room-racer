@@ -25,6 +25,9 @@ export interface PlayerInput {
   useItem: boolean;
 }
 
+/** Power-up types a car can hold and use. Extend as more items are added. */
+export type ItemType = 'boost';
+
 /** Authoritative state of a single car, sent in snapshots. */
 export interface CarState {
   playerId: string;
@@ -37,6 +40,18 @@ export interface CarState {
   lap: number;
   /** Finishing place once phase === 'finished' (1-based), else 0. */
   place: number;
+  /** The item the car is currently holding, or null. */
+  heldItem: ItemType | null;
+  /** True while a boost is active (for client VFX). */
+  boosting: boolean;
+}
+
+/** Authoritative state of a pickup pad, sent in snapshots. */
+export interface PickupState {
+  /** Index into the track's pickup list. */
+  index: number;
+  /** False while collected and on cooldown. */
+  active: boolean;
 }
 
 /** A full authoritative snapshot broadcast to clients. */
@@ -47,6 +62,8 @@ export interface Snapshot {
   /** Milliseconds remaining in the current phase (countdown), or race clock. */
   clockMs: number;
   cars: CarState[];
+  /** Pickup pad states (active/cooldown). */
+  pickups: PickupState[];
   /** Per-player: the last input seq the server has processed (for reconciliation). */
   ackedInputSeq: Record<string, number>;
 }

@@ -2,12 +2,15 @@ import {
   FIXED_DT,
   MAX_PLAYERS,
   SIM_TICK_RATE,
+  TRACK_LIST,
+  getTrack,
   headingFromQuatY,
   stepWorld,
   type LobbyState,
   type PlayerInput,
   type RaceFinished,
   type RacePhase,
+  type SimCar,
   type SimWorld,
   type Snapshot,
   type Track,
@@ -21,6 +24,12 @@ interface Player {
   playerId: string;
   displayName: string;
   carSkin: string;
+  /**
+   * Stable slot 0..MAX_PLAYERS-1, claimed on join and held for the session.
+   * Doubles as the starting-grid index and the car-colour palette index, so a
+   * player's colour matches their grid position and never changes mid-session.
+   */
+  slot: number;
   ready: boolean;
   /** Tick at which each completed lap finished, for best-lap computation. */
   lapTicks: number[];
@@ -33,7 +42,11 @@ interface Player {
  * one socket.io room and (in production) one GameLift game session.
  */
 export class Match {
-  private world: SimWorld = { tick: 0, cars: new Map() };
+  private world: SimWorld = {
+    tick: 0,
+    cars: new Map(),
+    pickupCooldownUntil: new Map(),
+  };
   private players = new Map<string, Player>();
   private latestInput = new Map<string, PlayerInput>();
   private ackedInputSeq = new Map<string, number>();
@@ -46,19 +59,21 @@ export class Match {
   private finished = new Set<string>();
 
   constructor(
-    private readonly track: Track,
+    private track: Track,
     private readonly emitSnapshot: (snap: Snapshot) => void,
     private readonly emitLobby: (lobby: LobbyState) => void,
     private readonly emitFinished: (result: RaceFinished) => void,
   ) {}
 
   addPlayer(playerId: string, displayName: string, carSkin: string): void {
-    if (this.players.size >= MAX_PLAYERS) return;
-    const spawn = this.track.spawnGrid[this.players.size];
+    const slot = this.claimFreeSlot();
+    if (slot == null) return; // Match is full.
+    const spawn = this.track.spawnGrid[slot];
     this.players.set(playerId, {
       playerId,
       displayName,
       carSkin,
+      slot,
       ready: false,
       lapTicks: [],
     });
@@ -76,9 +91,30 @@ export class Match {
       offTrackTicks: 0,
       recoveryTimer: 0,
       lockoutTimer: 0,
+      heldItem: null,
+      boostTimer: 0,
     });
     this.ackedInputSeq.set(playerId, 0);
     this.broadcastLobby();
+  }
+
+  /**
+   * Lowest slot not currently held by a player, or null when the match is full.
+   * A free-list (rather than `players.size`) matters because a mid-lobby
+   * leave/join would otherwise hand the newcomer a slot that's still in use,
+   * duplicating both a grid position and a car colour.
+   */
+  private claimFreeSlot(): number | null {
+    const taken = new Set([...this.players.values()].map((p) => p.slot));
+    for (let i = 0; i < MAX_PLAYERS; i++) {
+      if (!taken.has(i)) return i;
+    }
+    return null;
+  }
+
+  /** Number of players currently connected to this match. */
+  getPlayerCount(): number {
+    return this.players.size;
   }
 
   removePlayer(playerId: string): void {
@@ -90,6 +126,23 @@ export class Match {
       this.reevaluateCountdown();
       this.broadcastLobby();
     }
+  }
+
+  /** Change the track for the next race. Only allowed in the lobby. */
+  setTrack(trackId: string): void {
+    if (this.phase !== 'lobby') return;
+    const next = getTrack(trackId);
+    if (next.id === this.track.id) return;
+    this.track = next;
+    // Re-seat every car on the new track's grid and reset progress. Seating is
+    // by the player's stable slot, so grid order (and colour) stays consistent.
+    this.world.pickupCooldownUntil.clear();
+    for (const p of this.players.values()) {
+      p.lapTicks = [];
+      const car = this.world.cars.get(p.playerId);
+      if (car) this.resetCarToSpawn(car, p.slot);
+    }
+    this.broadcastLobby();
   }
 
   /** Set a player's ready flag; when everyone is ready, begin the countdown. */
@@ -116,27 +169,32 @@ export class Match {
     this.nextPlace = 1;
     this.finished.clear();
     this.latestInput.clear();
-    let i = 0;
+    this.world.pickupCooldownUntil.clear();
     for (const p of this.players.values()) {
       p.ready = false;
       p.lapTicks = [];
-      const spawn = this.track.spawnGrid[i++];
       const car = this.world.cars.get(p.playerId);
-      if (car) {
-        car.phase = 'countdown';
-        car.position = spawn ? { ...spawn.position } : { x: 0, y: 0, z: 0 };
-        car.heading = spawn ? headingFromQuatY(spawn.rotation) : 0;
-        car.velocity = { x: 0, y: 0, z: 0 };
-        car.speed = 0;
-        car.lastCheckpoint = -1;
-        car.lap = 0;
-        car.place = 0;
-        car.offTrackTicks = 0;
-        car.recoveryTimer = 0;
-        car.lockoutTimer = 0;
-      }
+      if (car) this.resetCarToSpawn(car, p.slot);
     }
     this.broadcastLobby();
+  }
+
+  /** Place a car on grid slot `index` and clear all its race progress. */
+  private resetCarToSpawn(car: SimCar, index: number): void {
+    const spawn = this.track.spawnGrid[index];
+    car.phase = 'countdown';
+    car.position = spawn ? { ...spawn.position } : { x: 0, y: 0, z: 0 };
+    car.heading = spawn ? headingFromQuatY(spawn.rotation) : 0;
+    car.velocity = { x: 0, y: 0, z: 0 };
+    car.speed = 0;
+    car.lastCheckpoint = -1;
+    car.lap = 0;
+    car.place = 0;
+    car.offTrackTicks = 0;
+    car.recoveryTimer = 0;
+    car.lockoutTimer = 0;
+    car.heldItem = null;
+    car.boostTimer = 0;
   }
 
   /** Buffer the newest input for a player; the sim consumes it each tick. */
@@ -292,9 +350,12 @@ export class Match {
         playerId: p.playerId,
         displayName: p.displayName,
         carSkin: p.carSkin,
+        colorIndex: p.slot,
         ready: p.ready,
       })),
       countdownMs: this.countdownMs(),
+      activeTrackId: this.track.id,
+      availableTracks: TRACK_LIST,
     };
   }
 
@@ -312,6 +373,12 @@ export class Match {
         lastCheckpoint: c.lastCheckpoint,
         lap: c.lap,
         place: c.place,
+        heldItem: c.heldItem,
+        boosting: c.boostTimer > 0,
+      })),
+      pickups: this.track.pickups.map((_, index) => ({
+        index,
+        active: this.world.tick >= (this.world.pickupCooldownUntil.get(index) ?? 0),
       })),
       ackedInputSeq: Object.fromEntries(this.ackedInputSeq),
     };

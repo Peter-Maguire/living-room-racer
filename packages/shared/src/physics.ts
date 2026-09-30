@@ -1,11 +1,17 @@
 import {
+  BOOST_MULTIPLIER,
+  BOOST_SECONDS,
   CAR_ACCEL,
   CAR_BRAKE,
+  CAR_COLLISION_RADIUS,
+  CAR_COLLISION_RESTITUTION,
   CAR_DRIFT_GRIP,
   CAR_MAX_SPEED,
   CAR_STEER_RATE,
   FALL_Y_THRESHOLD,
   OFF_TRACK_TICKS_BEFORE_RECOVERY,
+  PICKUP_RADIUS,
+  PICKUP_RESPAWN_TICKS,
   RACE_LAPS,
   RECOVERY_LIFT_SECONDS,
   RECOVERY_LOCKOUT_SECONDS,
@@ -16,7 +22,7 @@ import {
   nextCheckpointIndex,
   type Track,
 } from './track.js';
-import type { CarPhase, PlayerInput, Vec3 } from './types.js';
+import type { CarPhase, ItemType, PlayerInput, Vec3 } from './types.js';
 
 /**
  * The shared authoritative step. The SERVER runs this to produce the true world
@@ -46,11 +52,21 @@ export interface SimCar {
   recoveryTimer: number;
   /** Seconds of control lockout remaining after a re-drop. */
   lockoutTimer: number;
+  /** Held power-up, or null. */
+  heldItem: ItemType | null;
+  /** Seconds of boost remaining (0 = not boosting). */
+  boostTimer: number;
 }
 
 export interface SimWorld {
   tick: number;
   cars: Map<string, SimCar>;
+  /**
+   * Pickup pad cooldowns keyed by pad index: the tick at which the pad becomes
+   * active again. Absent/<=tick means active. Kept in the world (not per-car)
+   * so all cars agree, and so client prediction can mirror it deterministically.
+   */
+  pickupCooldownUntil: Map<number, number>;
 }
 
 /**
@@ -130,15 +146,69 @@ export function stepWorld(
   dt: number,
 ): void {
   for (const car of world.cars.values()) {
-    stepCar(car, inputs.get(car.playerId), track, dt);
+    stepCar(car, inputs.get(car.playerId), track, world, dt);
   }
+  resolveCarCollisions(world);
   world.tick += 1;
+}
+
+/**
+ * Deterministic car-to-car collisions. Cars are treated as circles; any
+ * overlapping pair is pushed apart equally, and the component of each car's
+ * speed heading into the other is damped so ramming bleeds momentum. Iteration
+ * order is stable (insertion order of the Map) so client and server agree.
+ */
+function resolveCarCollisions(world: SimWorld): void {
+  const cars = [...world.cars.values()].filter((c) => c.phase === 'racing');
+  const minDist = CAR_COLLISION_RADIUS * 2;
+  for (let i = 0; i < cars.length; i++) {
+    for (let j = i + 1; j < cars.length; j++) {
+      const a = cars[i]!;
+      const b = cars[j]!;
+      let dx = b.position.x - a.position.x;
+      let dz = b.position.z - a.position.z;
+      let dist = Math.hypot(dx, dz);
+      if (dist >= minDist) continue;
+
+      // Degenerate exact-overlap: nudge along X so the normal is defined.
+      if (dist < 1e-4) {
+        dx = 1;
+        dz = 0;
+        dist = 1;
+      }
+      const nx = dx / dist;
+      const nz = dz / dist;
+
+      // Separate the pair equally so neither ends up inside the other.
+      const overlap = (minDist - dist) / 2;
+      a.position.x -= nx * overlap;
+      a.position.z -= nz * overlap;
+      b.position.x += nx * overlap;
+      b.position.z += nz * overlap;
+
+      // Dampen the speed of whichever car is driving into the other along the
+      // collision normal (arcade response, since motion is heading+speed).
+      dampApproach(a, nx, nz);
+      dampApproach(b, -nx, -nz);
+    }
+  }
+}
+
+/** If the car is moving along (nx,nz), bleed that component of its speed. */
+function dampApproach(car: SimCar, nx: number, nz: number): void {
+  const fx = Math.sin(car.heading);
+  const fz = Math.cos(car.heading);
+  const along = fx * nx + fz * nz; // >0 => heading toward the other car
+  if (along > 0) {
+    car.speed *= 1 - CAR_COLLISION_RESTITUTION * along;
+  }
 }
 
 function stepCar(
   car: SimCar,
   input: PlayerInput | undefined,
   track: Track,
+  world: SimWorld,
   dt: number,
 ): void {
   // Recovery state machine takes precedence over normal driving.
@@ -153,6 +223,7 @@ function stepCar(
       car.offTrackTicks = 0;
       car.lockoutTimer = RECOVERY_LOCKOUT_SECONDS;
       car.phase = 'racing';
+      car.boostTimer = 0;
     }
     return;
   }
@@ -163,27 +234,71 @@ function stepCar(
   const controllable = car.lockoutTimer <= 0;
   if (car.lockoutTimer > 0) car.lockoutTimer -= dt;
 
+  updateItems(car, controllable ? input : undefined, track, world, dt);
   driveCar(car, controllable ? input : undefined, dt);
   integrate(car, dt);
   updateCheckpointProgress(car, track);
   handleOffTrack(car, track);
 }
 
+/**
+ * Item logic: decay an active boost, use a held item on request, and collect
+ * pickup pads driven over. Fully deterministic — pad cooldowns live in the
+ * world and are compared against world.tick, so client prediction matches.
+ */
+function updateItems(
+  car: SimCar,
+  input: PlayerInput | undefined,
+  track: Track,
+  world: SimWorld,
+  dt: number,
+): void {
+  // Decay any active boost.
+  if (car.boostTimer > 0) car.boostTimer = Math.max(0, car.boostTimer - dt);
+
+  // Use the held item.
+  if (input?.useItem && car.heldItem === 'boost') {
+    car.heldItem = null;
+    car.boostTimer = BOOST_SECONDS;
+  }
+
+  // Collect a pickup pad if driving over an active one and not already holding.
+  if (car.heldItem == null) {
+    const r2 = PICKUP_RADIUS * PICKUP_RADIUS;
+    for (let i = 0; i < track.pickups.length; i++) {
+      const until = world.pickupCooldownUntil.get(i) ?? 0;
+      if (world.tick < until) continue; // On cooldown.
+      const p = track.pickups[i]!;
+      const dx = car.position.x - p.x;
+      const dz = car.position.z - p.z;
+      if (dx * dx + dz * dz <= r2) {
+        car.heldItem = 'boost';
+        world.pickupCooldownUntil.set(i, world.tick + PICKUP_RESPAWN_TICKS);
+        break;
+      }
+    }
+  }
+}
+
 /** Arcade longitudinal + steering model. Deterministic; no RNG, no wall-clock. */
 function driveCar(car: SimCar, input: PlayerInput | undefined, dt: number): void {
+  const boosting = car.boostTimer > 0;
+  const maxSpeed = CAR_MAX_SPEED * (boosting ? BOOST_MULTIPLIER : 1);
+  const accel = CAR_ACCEL * (boosting ? BOOST_MULTIPLIER : 1);
+
   if (!input) {
-    // Coast: apply mild rolling drag toward zero.
-    car.speed = approach(car.speed, 0, CAR_ACCEL * 0.3 * dt);
+    // Coast: apply mild rolling drag toward zero (boost still carries speed).
+    car.speed = approach(car.speed, boosting ? maxSpeed : 0, accel * 0.3 * dt);
     return;
   }
 
   if (input.brake > 0 && car.speed > 0) {
     car.speed = Math.max(0, car.speed - CAR_BRAKE * input.brake * dt);
   } else {
-    car.speed += CAR_ACCEL * input.throttle * dt;
+    car.speed += accel * input.throttle * dt;
   }
-  // Clamp: full forward speed, limited reverse.
-  car.speed = clamp(car.speed, -CAR_MAX_SPEED * 0.4, CAR_MAX_SPEED);
+  // Clamp: full forward speed (boosted), limited reverse.
+  car.speed = clamp(car.speed, -CAR_MAX_SPEED * 0.4, maxSpeed);
 
   // Steering authority scales with speed (can't turn while nearly stopped) and
   // is sharper while drifting. Sign follows travel direction so reverse steers
@@ -288,6 +403,8 @@ export function carStateToSimCar(state: {
   lastCheckpoint: number;
   lap: number;
   place: number;
+  heldItem: ItemType | null;
+  boosting: boolean;
 }): SimCar {
   const heading = headingFromQuatY(state.rotation);
   // Project velocity onto heading direction to recover signed speed.
@@ -308,6 +425,10 @@ export function carStateToSimCar(state: {
     offTrackTicks: 0,
     recoveryTimer: 0,
     lockoutTimer: 0,
+    heldItem: state.heldItem,
+    // The snapshot only carries a boolean; approximate the remaining time so
+    // predicted boost feel is roughly right until the next snapshot corrects it.
+    boostTimer: state.boosting ? BOOST_SECONDS : 0,
   };
 }
 
@@ -333,7 +454,11 @@ export function stepSingleCar(
   track: Track,
   dt: number,
 ): void {
-  const world: SimWorld = { tick: 0, cars: new Map([[car.playerId, car]]) };
+  const world: SimWorld = {
+    tick: 0,
+    cars: new Map([[car.playerId, car]]),
+    pickupCooldownUntil: new Map(),
+  };
   const inputs = new Map<string, PlayerInput>();
   if (input) inputs.set(car.playerId, input);
   stepWorld(world, inputs, track, dt);
