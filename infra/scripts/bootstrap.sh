@@ -36,25 +36,26 @@ else
   echo "    exists"
 fi
 
-echo "==> [3/6] Building and uploading the game server as a GameLift build"
-# Build the server (and shared dep) so the uploaded build is runnable.
-( cd "${REPO_ROOT}" && pnpm --filter @racer/shared build && pnpm --filter @racer/server build )
-BUILD_VERSION="$(date +%Y%m%d-%H%M%S)"
-BUILD_ID="$(aws gamelift upload-build \
-  --operating-system AMAZON_LINUX_2 \
-  --build-root "${REPO_ROOT}/packages/server" \
-  --name "racer-${ENV}-server" \
-  --build-version "${BUILD_VERSION}" \
-  --query 'Build.BuildId' --output text 2>/dev/null || echo '')"
-if [[ -z "${BUILD_ID}" ]]; then
-  echo "    WARNING: upload-build failed or GameLift not available; using placeholder."
-  BUILD_ID="REPLACE_WITH_BUILD_ID"
+echo "==> [3/6] Building + pushing the game server container image to ECR"
+# The image bundles the official GameLift game server wrapper (see
+# packages/server/Dockerfile). If this fails we still deploy everything else;
+# the GameLift + matchmaking stacks are simply skipped.
+IMAGE_URI="$("${INFRA_DIR}/scripts/publish-server.sh" "${ENV}" | tail -n 1 || true)"
+if [[ ! "${IMAGE_URI}" =~ \.dkr\.ecr\..*amazonaws\.com/ ]]; then
+  IMAGE_URI=""
+  echo "    NOTE: no game server image was published."
+  echo "    Deploying WITHOUT the GameLift + matchmaking stacks (everything else"
+  echo "    still deploys). Add hosted servers later with:"
+  echo "      publish-server.sh <env>"
+  echo "      deploy.sh <env> --image-uri <uri>"
 else
-  echo "    build id: ${BUILD_ID}"
+  echo "    image: ${IMAGE_URI}"
 fi
 
 echo "==> [4/6] Deploying stacks"
-"${INFRA_DIR}/scripts/deploy.sh" "${ENV}" --build-id "${BUILD_ID}"
+DEPLOY_ARGS=()
+[[ -n "${IMAGE_URI}" ]] && DEPLOY_ARGS+=(--image-uri "${IMAGE_URI}")
+"${INFRA_DIR}/scripts/deploy.sh" "${ENV}" ${DEPLOY_ARGS[@]+"${DEPLOY_ARGS[@]}"}
 
 echo "==> [5/6] Outputs written to package .env files"
 

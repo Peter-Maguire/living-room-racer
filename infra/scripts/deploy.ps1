@@ -2,6 +2,7 @@
 #
 # Usage:
 #   .\deploy.ps1 -EnvName dev [-GameServerImageUri <ecrUri>] [-ChangeSet]
+#                [-SkipFleetRoll] [-ForceFleetRoll]
 #
 #   -EnvName             dev | staging | prod
 #   -GameServerImageUri  ECR image URI for the game server container. If omitted,
@@ -10,13 +11,23 @@
 #   -ChangeSet           Create and show a change set WITHOUT executing it, so you
 #                        can preview adds/replaces/deletes before applying (use
 #                        this for changes touching data/identity stacks).
+#   -SkipFleetRoll       Don't roll the GameLift fleet to the new container
+#                        version after the stack update (see below).
+#   -ForceFleetRoll      Roll the fleet even if it is already on the latest version.
+#
+# After the stack update the fleet is rolled to the latest container group
+# definition version and the deployment is awaited. CloudFormation creates the
+# new version but does NOT move the fleet onto it, so without this step a
+# deploy leaves the previous game server running. (Standalone: roll-fleet.ps1.)
 #
 # This runs the SAME templates locally and in CI; only params differ per env.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory, Position = 0)][string]$EnvName,
     [string]$GameServerImageUri = '',
-    [switch]$ChangeSet
+    [switch]$ChangeSet,
+    [switch]$SkipFleetRoll,
+    [switch]$ForceFleetRoll
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -107,4 +118,11 @@ if ($ChangeSet) {
     if ($deployExit -ne 0) { throw "cloudformation deploy failed (exit $deployExit)." }
     Write-Host '==> Done. Writing outputs...'
     & (Join-Path $PSScriptRoot 'outputs.ps1') -EnvName $EnvName
+
+    # Move the fleet onto the container version the stack just created.
+    if ($SkipFleetRoll) {
+        Write-Host '==> Skipping fleet roll (-SkipFleetRoll). Run roll-fleet.ps1 when ready.'
+    } else {
+        Invoke-FleetRoll -StackName $stack -Force:$ForceFleetRoll
+    }
 }
